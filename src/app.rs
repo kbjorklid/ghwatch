@@ -3,9 +3,12 @@ use crate::domain::ports::GithubProvider;
 use crate::github::client::GhCliClient;
 use crate::ui::events::AppEvent;
 use crate::ui::render::Renderer;
+use crate::config::AppConfig;
+use crate::polling::worker::PollingWorker;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use std::time::Duration;
+use std::sync::Arc;
 use crossterm::event::{self, Event, KeyCode};
 
 pub struct App {
@@ -15,14 +18,17 @@ pub struct App {
     pub event_rx: mpsc::Receiver<AppEvent>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub should_quit: bool,
-    pub github: Box<dyn GithubProvider>,
+    pub github: Arc<dyn GithubProvider>,
     pub current_checks: Vec<CheckRun>,
     pub current_timeline: Vec<TimelineEvent>,
+    pub config: AppConfig,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
+        let config = AppConfig::default();
+        let github = Arc::new(GhCliClient::new());
         
         Ok(Self {
             prs: Vec::new(),
@@ -31,35 +37,37 @@ impl App {
             event_rx: rx,
             event_tx: tx,
             should_quit: false,
-            github: Box::new(GhCliClient::new()),
+            github,
             current_checks: Vec::new(),
             current_timeline: Vec::new(),
+            config,
         })
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let tx = self.event_tx.clone();
-        
-        // Initial fetch (simple for Phase 2)
-        let github = GhCliClient::new();
-        let initial_prs = github.fetch_prs_by_query("is:open is:pr author:@me").await.unwrap_or_default();
-        self.prs = initial_prs;
+        // Start polling worker
+        let polling_worker = PollingWorker::new(
+            self.config.clone(),
+            self.github.clone(),
+            self.event_tx.clone(),
+        );
+        tokio::spawn(polling_worker.start());
 
         // Input task
+        let input_tx = self.event_tx.clone();
         tokio::spawn(async move {
             loop {
                 if event::poll(Duration::from_millis(100)).unwrap()
                     && let Event::Key(key) = event::read().unwrap() {
-                        let _ = tx.send(AppEvent::Input(key)).await;
+                        let _ = input_tx.send(AppEvent::Input(key)).await;
                 }
-                let _ = tx.send(AppEvent::Tick).await;
+                let _ = input_tx.send(AppEvent::Tick).await;
             }
         });
 
         self.renderer.init()?;
 
         while !self.should_quit {
-            // In Phase 2, we just draw with what we have
             self.renderer.draw(&self.prs, self.selected_index, &self.current_checks, &self.current_timeline)?;
 
             if let Some(event) = self.event_rx.recv().await {
@@ -84,8 +92,9 @@ impl App {
                     AppEvent::TimelineLoaded { events, .. } => {
                         self.current_timeline = events;
                     }
-                    AppEvent::Error(_) => {
-                        // Log error
+                    AppEvent::Error(msg) => {
+                        // For now just ignore or log
+                        eprintln!("Error: {}", msg);
                     }
                 }
             }
@@ -118,7 +127,7 @@ impl App {
     async fn trigger_details_fetch(&mut self) {
         if let Some(pr) = self.prs.get(self.selected_index) {
             let tx = self.event_tx.clone();
-            let github = GhCliClient::new();
+            let github = self.github.clone();
             let repo = pr.repo.clone();
             let number = pr.number;
             

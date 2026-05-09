@@ -63,6 +63,6 @@ Before starting Phase 1, ensure:
 |-------|--------|
 | 1 — Core Model & UI | Completed |
 | 2 — GitHub Integration | Completed |
-| 3 — Polling & Concurrency | Not started |
+| 3 — Polling & Concurrency | Completed |
 | 4 — State & Rules | Not started |
 | 5 — Features & Polish | Not started |

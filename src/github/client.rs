@@ -6,7 +6,11 @@ use crate::github::models::{RawPullRequest, RawCheckRun, RawTimelineEvent};
 use tokio::process::Command;
 use serde_json;
 
-pub struct GhCliClient;
+use crate::github::rate_limit::RateLimitTracker;
+
+pub struct GhCliClient {
+    pub rate_limit: RateLimitTracker,
+}
 
 impl Default for GhCliClient {
     fn default() -> Self {
@@ -16,7 +20,9 @@ impl Default for GhCliClient {
 
 impl GhCliClient {
     pub fn new() -> Self {
-        Self
+        Self {
+            rate_limit: RateLimitTracker::new(),
+        }
     }
 
     async fn run_gh(&self, args: &[&str]) -> Result<String> {
@@ -87,6 +93,21 @@ impl GithubProvider for GhCliClient {
             created_at: r.created_at.unwrap_or_default(),
             content: None, // Simplified for now
         }).collect())
+    }
+
+    async fn fetch_rate_limit(&self) -> Result<crate::domain::pr::RateLimitStatus> {
+        let output = self.run_gh(&["api", "rate_limit"]).await?;
+        let json: serde_json::Value = serde_json::from_str(&output)?;
+        
+        let core = &json["resources"]["core"];
+        let status = crate::domain::pr::RateLimitStatus {
+            remaining: core["remaining"].as_u64().unwrap_or(0) as u32,
+            limit: core["limit"].as_u64().unwrap_or(0) as u32,
+            reset_at: core["reset"].as_u64().unwrap_or(0),
+        };
+        
+        self.rate_limit.update(status.clone());
+        Ok(status)
     }
 }
 

@@ -59,6 +59,13 @@ pub enum CIStatus {
     Skipped,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitStatus {
+    pub remaining: u32,
+    pub limit: u32,
+    pub reset_at: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
