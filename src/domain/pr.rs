@@ -18,6 +18,8 @@ pub struct PullRequest {
     pub ci_status: CIStatus,
     pub head_ref: String,
     pub body: String,
+    pub requested_reviewers: Vec<String>,
+    pub last_seen_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +90,8 @@ mod tests {
             ci_status: CIStatus::Passing,
             head_ref: "sha123".to_string(),
             body: "Detailed description".to_string(),
+            requested_reviewers: vec!["bob".to_string()],
+            last_seen_at: None,
         };
 
         assert_eq!(pr.number, 42);

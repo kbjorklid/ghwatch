@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub polling_interval_ms: u64,
     #[serde(default = "default_true")]
     pub use_nerd_fonts: bool,
+    pub current_user: String,
+    pub unfollow_timeout_mins: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,8 @@ impl Default for AppConfig {
             ],
             polling_interval_ms: 30000,
             use_nerd_fonts: true,
+            current_user: String::new(),
+            unfollow_timeout_mins: 60,
         }
     }
 }

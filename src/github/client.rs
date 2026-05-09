@@ -54,7 +54,7 @@ impl GithubProvider for GhCliClient {
     }
 
     async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
-        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url";
+        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url,reviewRequests";
         let output = self.run_gh(&["pr", "view", &pr_number.to_string(), "-R", repo, "--json", fields]).await?;
 
         let raw: RawPullRequest = serde_json::from_str(&output)
@@ -144,6 +144,11 @@ impl From<RawPullRequest> for PullRequest {
             },
             head_ref: raw.head_ref_oid.unwrap_or_default(),
             body: raw.body,
+            requested_reviewers: raw.review_requests.unwrap_or_default().into_iter()
+                .filter_map(|r| r.requested_reviewer)
+                .filter_map(|rr| rr.login)
+                .collect(),
+            last_seen_at: None,
         }
     }
 }
@@ -174,6 +179,14 @@ mod tests {
             status_check_rollup: Some(RawStatusCheckRollup { state: "SUCCESS".to_string() }),
             head_ref_oid: Some("sha123".to_string()),
             url: "https://github.com/org/repo/pull/123".to_string(),
+            review_requests: Some(vec![
+                RawReviewRequest {
+                    requested_reviewer: Some(RawRequestedReviewer {
+                        typename: "User".to_string(),
+                        login: Some("bob".to_string()),
+                    })
+                }
+            ]),
         };
 
         let pr: PullRequest = raw.into();
@@ -188,5 +201,6 @@ mod tests {
         assert_eq!(pr.additions, 10);
         assert_eq!(pr.deletions, 5);
         assert_eq!(pr.head_ref, "sha123");
+        assert_eq!(pr.requested_reviewers, vec!["bob".to_string()]);
     }
 }

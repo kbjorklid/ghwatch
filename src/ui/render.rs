@@ -39,33 +39,49 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent]) -> Result<()> {
+    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent], current_user: &str) -> Result<()> {
         self.terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
                 .split(f.area());
 
-            Self::render_list(f, chunks[0], prs, selected_index);
+            Self::render_list(f, chunks[0], prs, selected_index, current_user);
             Self::render_detail(f, chunks[1], prs, selected_index, checks, timeline);
         })?;
         Ok(())
     }
 
-    fn render_list(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize) {
+    fn render_list(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize, current_user: &str) {
         let icons = crate::ui::icons::Icons::new(false); // Default to false for now
         let items: Vec<ListItem> = prs
             .iter()
             .enumerate()
             .map(|(i, pr)| {
-                let style = if i == selected_index {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+                let is_selected = i == selected_index;
+                let is_unread = crate::domain::lifecycle::is_unread(pr);
+                let needs_attention = crate::domain::rules::needs_attention(pr, current_user);
+
+                let mut style = Style::default();
+                if is_selected {
+                    style = style.fg(Color::Yellow);
+                }
+                
+                if is_unread {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+
+                if needs_attention {
+                    style = style.fg(Color::Red);
+                }
 
                 // Line 1: ID, Title, Status
+                let unread_marker = if is_unread { "● " } else { "  " };
+                let attention_marker = if needs_attention { "! " } else { "  " };
+
                 let line1 = Line::from(vec![
+                    Span::styled(unread_marker, Style::default().fg(Color::Blue)),
+                    Span::styled(attention_marker, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("#{} ", pr.number), Style::default().fg(Color::Gray)),
                     Span::styled(&pr.title, style),
                 ]);

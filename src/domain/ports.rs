@@ -9,3 +9,10 @@ pub trait GithubProvider: Send + Sync {
     async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> Result<Vec<TimelineEvent>>;
     async fn fetch_rate_limit(&self) -> Result<RateLimitStatus>;
 }
+
+pub trait StateRepository: Send + Sync {
+    fn load_state(&self) -> Result<Vec<PullRequest>>;
+    fn save_state(&self, prs: &[PullRequest]) -> Result<()>;
+    fn load_archive(&self) -> Result<Vec<PullRequest>>;
+    fn save_archive(&self, prs: &[PullRequest]) -> Result<()>;
+}

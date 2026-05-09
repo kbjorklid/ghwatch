@@ -27,6 +27,21 @@ pub struct RawPullRequest {
     #[serde(rename = "headRefOid")]
     pub head_ref_oid: Option<String>,
     pub url: String,
+    #[serde(rename = "reviewRequests")]
+    pub review_requests: Option<Vec<RawReviewRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawReviewRequest {
+    #[serde(rename = "requestedReviewer")]
+    pub requested_reviewer: Option<RawRequestedReviewer>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawRequestedReviewer {
+    #[serde(rename = "__typename")]
+    pub typename: String,
+    pub login: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
