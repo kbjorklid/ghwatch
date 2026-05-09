@@ -9,7 +9,7 @@ pub struct PullRequest {
     pub author: String,
     pub repo: String,
     pub status: PRStatus,
-    pub created_at: String, // Simplified for now
+    pub created_at: String,
     pub updated_at: String,
     pub additions: u32,
     pub deletions: u32,
@@ -17,6 +17,23 @@ pub struct PullRequest {
     pub comment_count: u32,
     pub ci_status: CIStatus,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckRun {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineEvent {
+    pub id: String,
+    pub event_type: String,
+    pub actor: String,
+    pub created_at: String,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Display)]

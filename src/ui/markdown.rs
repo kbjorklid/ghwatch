@@ -1,4 +1,4 @@
-use comrak::{markdown_to_commonmark, Options};
+use comrak::Options;
 
 pub fn render_markdown(text: &str) -> String {
     // For Phase 1, we just return the text.
