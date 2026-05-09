@@ -39,17 +39,72 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent], current_user: &str) -> Result<()> {
+    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent], current_user: &str, mode: &crate::app::AppMode, input_buffer: &str) -> Result<()> {
         self.terminal.draw(|f| {
             let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    if matches!(mode, crate::app::AppMode::Search | crate::app::AppMode::Follow) { Constraint::Length(3) } else { Constraint::Length(0) },
+                ].as_ref())
                 .split(f.area());
 
-            Self::render_list(f, chunks[0], prs, selected_index, current_user);
-            Self::render_detail(f, chunks[1], prs, selected_index, checks, timeline);
+            match mode {
+                crate::app::AppMode::Settings => {
+                    Self::render_settings(f, chunks[0]);
+                }
+                crate::app::AppMode::Archive => {
+                    Self::render_archive(f, chunks[0]);
+                }
+                _ => {
+                    let main_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+                        .split(chunks[0]);
+
+                    Self::render_list(f, main_chunks[0], prs, selected_index, current_user);
+                    Self::render_detail(f, main_chunks[1], prs, selected_index, checks, timeline);
+                }
+            }
+
+            let prompt_label = match mode {
+                crate::app::AppMode::Search => Some("/Search: "),
+                crate::app::AppMode::Follow => Some("Follow (URL/Shorthand): "),
+                _ => None,
+            };
+
+            if let Some(label) = prompt_label {
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Input (Esc to cancel) ");
+                let text = Paragraph::new(format!("{}{}", label, input_buffer))
+                    .block(block);
+                f.render_widget(text, chunks[1]);
+            }
         })?;
         Ok(())
+    }
+
+    fn render_settings(f: &mut ratatui::Frame, area: Rect) {
+        let block = Block::default().borders(Borders::ALL).title(" Settings (Esc to exit) ");
+        let text = vec![
+            Line::from("Configuration is currently managed via state.toml and config.toml."),
+            Line::from("Hot-reload is enabled for config.toml changes."),
+            Line::from(""),
+            Line::from("Theme selection and visibility toggles coming soon."),
+        ];
+        let paragraph = Paragraph::new(text).block(block);
+        f.render_widget(paragraph, area);
+    }
+
+    fn render_archive(f: &mut ratatui::Frame, area: Rect) {
+        let block = Block::default().borders(Borders::ALL).title(" Archive (Esc to exit) ");
+        let text = vec![
+            Line::from("Archived PRs are stored in archive.toml."),
+            Line::from("Rotation is enabled (3 files max, 1MB each)."),
+        ];
+        let paragraph = Paragraph::new(text).block(block);
+        f.render_widget(paragraph, area);
     }
 
     fn render_list(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize, current_user: &str) {
