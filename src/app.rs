@@ -60,7 +60,7 @@ impl App {
 
         while !self.should_quit {
             // In Phase 2, we just draw with what we have
-            self.renderer.draw(&self.prs, self.selected_index)?;
+            self.renderer.draw(&self.prs, self.selected_index, &self.current_checks, &self.current_timeline)?;
 
             if let Some(event) = self.event_rx.recv().await {
                 match event {
@@ -127,8 +127,17 @@ impl App {
                 if let Ok(full_pr) = github.fetch_pr_details(&repo, number).await {
                     let _ = tx.send(AppEvent::PrsUpdated { 
                         query_name: "detail".to_string(), 
-                        prs: vec![full_pr] 
+                        prs: vec![full_pr.clone()] 
                     }).await;
+
+                    if !full_pr.head_ref.is_empty() 
+                        && let Ok(checks) = github.fetch_check_runs(&repo, &full_pr.head_ref).await {
+                            let _ = tx.send(AppEvent::CiStatusLoaded { 
+                                repo: repo.clone(), 
+                                pr_number: number, 
+                                checks 
+                            }).await;
+                        }
                 }
 
                 if let Ok(timeline) = github.fetch_timeline(&repo, number).await {

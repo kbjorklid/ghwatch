@@ -24,6 +24,8 @@ pub struct RawPullRequest {
     pub review_decision: Option<String>,
     #[serde(rename = "statusCheckRollup")]
     pub status_check_rollup: Option<RawStatusCheckRollup>,
+    #[serde(rename = "headRefOid")]
+    pub head_ref_oid: Option<String>,
     pub url: String,
 }
 

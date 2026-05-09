@@ -39,7 +39,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize) -> Result<()> {
+    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent]) -> Result<()> {
         self.terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
@@ -47,7 +47,7 @@ impl Renderer {
                 .split(f.area());
 
             Self::render_list(f, chunks[0], prs, selected_index);
-            Self::render_detail(f, chunks[1], prs, selected_index);
+            Self::render_detail(f, chunks[1], prs, selected_index, checks, timeline);
         })?;
         Ok(())
     }
@@ -90,13 +90,71 @@ impl Renderer {
         f.render_widget(list, area);
     }
 
-    fn render_detail(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize) {
+    fn render_detail(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent]) {
         if let Some(pr) = prs.get(selected_index) {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" #{} - {} ", pr.number, pr.title));
             
-            let paragraph = Paragraph::new(pr.body.as_str())
+            let mut detail_text = Vec::new();
+            
+            // Header Info
+            detail_text.push(Line::from(vec![
+                Span::styled("Author: ", Style::default().fg(Color::Gray)),
+                Span::raw(&pr.author),
+                Span::raw(" | "),
+                Span::styled("Repo: ", Style::default().fg(Color::Gray)),
+                Span::raw(&pr.repo),
+            ]));
+            
+            detail_text.push(Line::from(vec![
+                Span::styled("Status: ", Style::default().fg(Color::Gray)),
+                Span::raw(format!("{} ", pr.status)),
+                Span::styled("Review: ", Style::default().fg(Color::Gray)),
+                Span::raw(format!("{} ", pr.review_status)),
+                Span::styled("CI: ", Style::default().fg(Color::Gray)),
+                Span::raw(format!("{} ", pr.ci_status)),
+            ]));
+            
+            detail_text.push(Line::from(""));
+
+            // CI Checks
+            if !checks.is_empty() {
+                detail_text.push(Line::from(Span::styled("CI Checks:", Style::default().add_modifier(Modifier::BOLD))));
+                for check in checks {
+                    let color = match check.conclusion.as_deref() {
+                        Some("success") => Color::Green,
+                        Some("failure") | Some("error") => Color::Red,
+                        _ => Color::Yellow,
+                    };
+                    detail_text.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(format!("{} ", check.conclusion.as_deref().unwrap_or(&check.status)), Style::default().fg(color)),
+                        Span::raw(&check.name),
+                    ]));
+                }
+                detail_text.push(Line::from(""));
+            }
+
+            // Timeline
+            if !timeline.is_empty() {
+                detail_text.push(Line::from(Span::styled("Activity:", Style::default().add_modifier(Modifier::BOLD))));
+                for event in timeline.iter().take(10) { // Limit to 10 for now
+                    detail_text.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(format!("{} ", event.event_type), Style::default().fg(Color::Cyan)),
+                        Span::raw(format!("by {} ", event.actor)),
+                        Span::styled(&event.created_at, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+                detail_text.push(Line::from(""));
+            }
+
+            // Body
+            detail_text.push(Line::from(Span::styled("Description:", Style::default().add_modifier(Modifier::BOLD))));
+            detail_text.push(Line::from(pr.body.as_str()));
+            
+            let paragraph = Paragraph::new(detail_text)
                 .block(block)
                 .wrap(Wrap { trim: true });
             

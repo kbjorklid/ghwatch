@@ -48,7 +48,7 @@ impl GithubProvider for GhCliClient {
     }
 
     async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
-        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,url";
+        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url";
         let output = self.run_gh(&["pr", "view", &pr_number.to_string(), "-R", repo, "--json", fields]).await?;
 
         let raw: RawPullRequest = serde_json::from_str(&output)
@@ -121,6 +121,7 @@ impl From<RawPullRequest> for PullRequest {
                 Some(s) if s == "PENDING" => CIStatus::Pending,
                 _ => CIStatus::Skipped,
             },
+            head_ref: raw.head_ref_oid.unwrap_or_default(),
             body: raw.body,
         }
     }
@@ -150,6 +151,7 @@ mod tests {
             deletions: Some(5),
             review_decision: Some("APPROVED".to_string()),
             status_check_rollup: Some(RawStatusCheckRollup { state: "SUCCESS".to_string() }),
+            head_ref_oid: Some("sha123".to_string()),
             url: "https://github.com/org/repo/pull/123".to_string(),
         };
 
@@ -164,5 +166,6 @@ mod tests {
         assert_eq!(pr.comment_count, 5);
         assert_eq!(pr.additions, 10);
         assert_eq!(pr.deletions, 5);
+        assert_eq!(pr.head_ref, "sha123");
     }
 }

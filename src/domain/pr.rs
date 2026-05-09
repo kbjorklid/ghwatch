@@ -16,6 +16,7 @@ pub struct PullRequest {
     pub review_status: ReviewStatus,
     pub comment_count: u32,
     pub ci_status: CIStatus,
+    pub head_ref: String,
     pub body: String,
 }
 
@@ -78,6 +79,7 @@ mod tests {
             review_status: ReviewStatus::Pending,
             comment_count: 3,
             ci_status: CIStatus::Passing,
+            head_ref: "sha123".to_string(),
             body: "Detailed description".to_string(),
         };
 
