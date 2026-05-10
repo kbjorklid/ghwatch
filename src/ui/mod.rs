@@ -4,3 +4,4 @@ pub mod search;
 pub mod icons;
 pub mod markdown;
 pub mod events;
+pub mod theme;

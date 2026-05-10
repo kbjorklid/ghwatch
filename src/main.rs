@@ -1,16 +1,16 @@
-pub mod app;
-pub mod config;
-pub mod domain;
-pub mod github;
-pub mod logging;
-pub mod notify;
-pub mod polling;
-pub mod storage;
-pub mod ui;
+use ghnotify_gemini::app;
+use ghnotify_gemini::storage::get_data_dir;
+use ghnotify_gemini::logging;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Phase 1: Minimal main to run the TUI with dummy data
+    if let Some(data_dir) = get_data_dir() {
+        let _ = logging::init_logging(&data_dir);
+    }
+
     let mut app = app::App::new()?;
-    app.run().await
+    app.renderer.init()?;
+    let res = app.run(false).await;
+    app.renderer.restore()?;
+    res
 }

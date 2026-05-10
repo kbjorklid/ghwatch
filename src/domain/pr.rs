@@ -18,8 +18,16 @@ pub struct PullRequest {
     pub ci_status: CIStatus,
     pub head_ref: String,
     pub body: String,
+    pub url: String,
     pub requested_reviewers: Vec<String>,
+    pub reviewers: Vec<Reviewer>,
     pub last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reviewer {
+    pub login: String,
+    pub status: String, // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING"
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,7 +98,9 @@ mod tests {
             ci_status: CIStatus::Passing,
             head_ref: "sha123".to_string(),
             body: "Detailed description".to_string(),
+            url: "https://github.com/org/repo/pull/42".to_string(),
             requested_reviewers: vec!["bob".to_string()],
+            reviewers: vec![],
             last_seen_at: None,
         };
 

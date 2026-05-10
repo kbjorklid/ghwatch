@@ -1,1 +1,7 @@
 /target
+.lock
+.gemini/
+.DS_Store
+debug/
+release/
+

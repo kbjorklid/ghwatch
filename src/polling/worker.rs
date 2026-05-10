@@ -34,9 +34,11 @@ impl PollingWorker {
                 continue;
             }
 
-            // Rate limit check once per cycle or occasionally
-            if query_index == 0
-                && let Ok(rate) = self.github.fetch_rate_limit().await {
+            if query_index == 0 {
+                let _ = self.event_tx.send(AppEvent::PollCycleStarted).await;
+                
+                // Rate limit check once per cycle
+                if let Ok(rate) = self.github.fetch_rate_limit().await {
                     if rate.remaining < 50 {
                         let _ = self.event_tx.send(AppEvent::Error("Rate limit critical! Pausing polling...".to_string())).await;
                         time::sleep(Duration::from_secs(300)).await; // Long wait
@@ -46,6 +48,7 @@ impl PollingWorker {
                         time::sleep(Duration::from_secs(60)).await;
                     }
                 }
+            }
 
             // Round-robin
             let query = &self.config.queries[query_index];
@@ -85,5 +88,103 @@ fn parse_duration(s: &str) -> Option<Duration> {
         stripped.parse::<u64>().ok().map(|m| Duration::from_secs(m * 60))
     } else {
         s.parse::<u64>().ok().map(Duration::from_secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus, RateLimitStatus};
+    use async_trait::async_trait;
+    use mockall::mock;
+    use crate::config::QueryConfig;
+
+    mock! {
+        pub GithubProvider {}
+        #[async_trait]
+        impl GithubProvider for GithubProvider {
+            async fn fetch_prs_by_query(&self, query: &str) -> anyhow::Result<Vec<PullRequest>>;
+            async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> anyhow::Result<PullRequest>;
+            async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> anyhow::Result<Vec<CheckRun>>;
+            async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> anyhow::Result<Vec<TimelineEvent>>;
+            async fn fetch_rate_limit(&self) -> anyhow::Result<RateLimitStatus>;
+            async fn fetch_current_user(&self) -> anyhow::Result<String>;
+            async fn open_pr_in_browser(&self, url: &str) -> anyhow::Result<()>;
+        }
+    }
+    
+    // We need to redefine CheckRun and TimelineEvent or import them if they were public and available
+    // For the mock to work correctly in this scope.
+    use crate::domain::pr::{CheckRun, TimelineEvent};
+
+    #[tokio::test]
+    async fn test_polling_worker_cycle() {
+        let mut github = MockGithubProvider::new();
+        let (tx, mut rx) = mpsc::channel(10);
+        
+        let config = AppConfig {
+            queries: vec![QueryConfig {
+                name: "test".to_string(),
+                search: "search".to_string(),
+                interval: "1s".to_string(),
+                enabled: true,
+            }],
+            polling_interval_ms: 10,
+            ..Default::default()
+        };
+        
+        github.expect_fetch_rate_limit().returning(|| Ok(RateLimitStatus {
+            limit: 5000,
+            remaining: 4000,
+            reset_at: 0,
+        }));
+        
+        github.expect_fetch_prs_by_query().returning(|_| Ok(vec![PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test".to_string(),
+            author: "alice".to_string(),
+            repo: "org/repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            ci_status: CIStatus::Passing,
+            head_ref: "".to_string(),
+            body: "".to_string(),
+            url: "".to_string(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
+        }]));
+        
+        let worker = PollingWorker::new(config, Arc::new(github), tx);
+        
+        // Run worker in background and wait for events
+        let handle = tokio::spawn(worker.start());
+        
+        let event1 = rx.recv().await.unwrap();
+        assert!(matches!(event1, AppEvent::PollCycleStarted));
+
+        let event2 = rx.recv().await.unwrap();
+        if let AppEvent::PrsUpdated { query_name, prs } = event2 {
+            assert_eq!(query_name, "test");
+            assert_eq!(prs.len(), 1);
+        } else {
+            panic!("Unexpected event: {:?}", event2);
+        }
+        
+        handle.abort();
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("60s"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
+        assert_eq!(parse_duration("invalid"), None);
     }
 }

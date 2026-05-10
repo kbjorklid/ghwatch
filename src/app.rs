@@ -12,24 +12,42 @@ use std::sync::Arc;
 use crate::storage::local::FileStateRepository;
 use crate::storage::get_data_dir;
 use tokio::process::Command;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event;
+use ratatui::backend::Backend;
 
 use crate::storage::lock::FileLock;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AppMode {
     Normal,
     Search,
     Follow,
     Settings,
     Archive,
+    Help,
+    Diagnostic,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SortMode {
+    Updated,
+    Created,
+    Priority,
+    Repo,
 }
 
 use crate::notify::dispatcher::NotificationDispatcher;
 
-pub struct App {
-    pub prs: Vec<PullRequest>,
-    pub selected_index: usize,
-    pub renderer: Renderer,
+use crate::domain::pr_list::PRList;
+
+pub struct App<B: Backend> 
+where 
+    B::Error: std::error::Error + Send + Sync + 'static
+{
+    pub pr_list: PRList,
+    pub archive_list: PRList,
+    pub settings_selected_index: usize,
+    pub renderer: Renderer<B>,
     pub event_rx: mpsc::Receiver<AppEvent>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub should_quit: bool,
@@ -41,18 +59,45 @@ pub struct App {
     pub is_writer: bool,
     pub _lock: Option<FileLock>,
     pub mode: AppMode,
+    pub sort_mode: SortMode,
+    pub detail_focused: bool,
+    pub detail_scroll: u16,
     pub input_buffer: String,
     pub config_watcher: Option<crate::config::watcher::ConfigWatcher>,
-    pub notifier: NotificationDispatcher,
+    pub state_watcher: Option<crate::config::watcher::StateWatcher>,
+    pub notifier: Box<dyn crate::domain::ports::NotificationService>,
+    pub last_refresh: Option<std::time::Instant>,
+    pub polling_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl App {
+impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
     pub fn new() -> Result<Self> {
-        let (tx, rx) = mpsc::channel(100);
-        let config = AppConfig::default();
-        let github = Arc::new(GhCliClient::new());
-
+        let config_dir = crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        
+        let github = Arc::new(GhCliClient::new());
+        let state_repo = Arc::new(FileStateRepository::new(data_dir.clone()));
+        
+        let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
+        Self::with_deps(github, state_repo, config_dir, data_dir, backend)
+    }
+}
+
+impl<B: Backend> App<B> 
+where 
+    B::Error: std::error::Error + Send + Sync + 'static
+{
+    pub fn with_deps(
+        github: Arc<dyn GithubProvider>,
+        state_repo: Arc<dyn StateRepository>,
+        config_dir: std::path::PathBuf,
+        data_dir: std::path::PathBuf,
+        backend: B,
+    ) -> Result<Self> {
+        let (tx, rx) = mpsc::channel(100);
+        let config_path = config_dir.join("config.toml");
+        let config = AppConfig::load(&config_path).unwrap_or_default();
+        
         let _ = std::fs::create_dir_all(&data_dir);
         let lock_path = data_dir.join(".lock");
         
@@ -64,14 +109,15 @@ impl App {
             }
         };
 
-        let state_repo = Arc::new(FileStateRepository::new(data_dir));
         let prs = state_repo.load_state().unwrap_or_default();
-        let notifier = NotificationDispatcher::new(true);
+        let archived_prs = state_repo.load_archive().unwrap_or_default();
+        let notifier = Box::new(NotificationDispatcher::new(true));
 
         Ok(Self {
-            prs,
-            selected_index: 0,
-            renderer: Renderer::new()?,
+            pr_list: PRList::new(prs),
+            archive_list: PRList::new(archived_prs),
+            settings_selected_index: 0,
+            renderer: Renderer::new(backend)?,
             event_rx: rx,
             event_tx: tx,
             should_quit: false,
@@ -83,22 +129,30 @@ impl App {
             is_writer,
             _lock: lock,
             mode: AppMode::Normal,
+            sort_mode: SortMode::Updated,
+            detail_focused: false,
+            detail_scroll: 0,
             input_buffer: String::new(),
             config_watcher: None,
+            state_watcher: None,
             notifier,
+            last_refresh: None,
+            polling_task: None,
         })
     }
+}
 
-
-    pub async fn run(&mut self) -> Result<()> {
-        // Initialize config watcher
+impl<B: Backend> App<B> 
+where 
+    B::Error: std::error::Error + Send + Sync + 'static
+{
+    pub async fn run(&mut self, _init_renderer: bool) -> Result<()> {
         let config_dir = crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let config_path = config_dir.join("config.toml");
         if config_path.exists() {
             self.config_watcher = crate::config::watcher::ConfigWatcher::new(&config_path, self.event_tx.clone()).ok();
         }
 
-        // Detect current user if missing
         if self.config.current_user.is_empty() {
             let output = Command::new("gh")
                 .args(["api", "user", "--jq", ".login"])
@@ -109,205 +163,214 @@ impl App {
             }
         }
 
-        // Start polling worker
-        let polling_worker = PollingWorker::new(
-            self.config.clone(),
-            self.github.clone(),
-            self.event_tx.clone(),
-        );
-        tokio::spawn(polling_worker.start());
+        if self.is_writer {
+            let polling_worker = PollingWorker::new(
+                self.config.clone(),
+                self.github.clone(),
+                self.event_tx.clone(),
+            );
+            tokio::spawn(polling_worker.start());
+        } else {
+            let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let state_path = data_dir.join("state.toml");
+            if state_path.exists() {
+                self.state_watcher = crate::config::watcher::StateWatcher::new(&state_path, self.event_tx.clone()).ok();
+            }
+        }
 
-        // Input task
         let input_tx = self.event_tx.clone();
         tokio::spawn(async move {
             loop {
-                if event::poll(Duration::from_millis(100)).unwrap()
-                    && let Event::Key(key) = event::read().unwrap() {
-                        let _ = input_tx.send(AppEvent::Input(key)).await;
+                if event::poll(Duration::from_millis(100)).unwrap() {
+                    let e = event::read().unwrap();
+                    let _ = input_tx.send(AppEvent::Input(e)).await;
                 }
                 let _ = input_tx.send(AppEvent::Tick).await;
             }
         });
 
-        self.renderer.init()?;
-
         while !self.should_quit {
-            let filtered_prs = if let AppMode::Search = self.mode {
-                crate::ui::search::filter_prs(&self.prs, &self.input_buffer)
-            } else {
-                self.prs.to_vec()
+            let (draw_prs, draw_index) = match self.mode {
+                AppMode::Search => (crate::ui::search::filter_prs(self.pr_list.items(), &self.input_buffer), self.pr_list.selected_index()),
+                AppMode::Archive => (self.archive_list.items().to_vec(), self.archive_list.selected_index()),
+                _ => (self.pr_list.items().to_vec(), self.pr_list.selected_index()),
             };
-            self.renderer.draw(&filtered_prs, self.selected_index, &self.current_checks, &self.current_timeline, &self.config.current_user, &self.mode, &self.input_buffer)?;
+
+            self.renderer.draw(crate::ui::render::DrawContext {
+                prs: &draw_prs,
+                selected_index: draw_index,
+                settings_selected_index: self.settings_selected_index,
+                checks: &self.current_checks,
+                timeline: &self.current_timeline,
+                mode: &self.mode,
+                detail_focused: self.detail_focused,
+                detail_scroll: self.detail_scroll,
+                input_buffer: &self.input_buffer,
+                config: &self.config,
+                last_refresh: self.last_refresh,
+            })?;
 
             if let Some(event) = self.event_rx.recv().await {
-                match event {
-                    AppEvent::Input(key) => self.handle_key(key).await,
-                    AppEvent::Tick => {},
-                    AppEvent::PrsUpdated { query_name, prs } => {
-                        self.merge_prs(prs, query_name == "detail").await;
-                        if self.is_writer {
-                            let _ = self.state_repo.save_state(&self.prs);
-                        }
-                    }
-                    AppEvent::CiStatusLoaded { checks, .. } => {
-                        self.current_checks = checks;
-                    }
-                    AppEvent::TimelineLoaded { events, .. } => {
-                        self.current_timeline = events;
-                    }
-                    AppEvent::ConfigReloaded(new_config) => {
-                        self.config = new_config;
-                    }
-                    AppEvent::Error(msg) => {
-                        // For now just ignore or log
-                        eprintln!("Error: {}", msg);
-                    }
-                }
+                self.handle_app_event(event).await;
             }
         }
 
-        self.renderer.restore()?;
         Ok(())
     }
 
-    async fn merge_prs(&mut self, new_prs: Vec<PullRequest>, is_detail: bool) {
+    async fn handle_app_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::Input(e) => crate::input::handle_event(self, e).await,
+            AppEvent::Tick => {},
+            AppEvent::PrsUpdated { query_name, prs } => {
+                self.merge_prs(prs, query_name == "detail").await;
+                if self.is_writer {
+                    let _ = self.state_repo.save_state(self.pr_list.items());
+                }
+            }
+            AppEvent::CiStatusLoaded { repo, pr_number, checks } => {
+                if let Some(selected) = self.pr_list.selected_pr()
+                    && selected.repo == repo && selected.number == pr_number {
+                        self.current_checks = checks;
+                    }
+            }
+            AppEvent::TimelineLoaded { repo, pr_number, events } => {
+                if let Some(selected) = self.pr_list.selected_pr()
+                    && selected.repo == repo && selected.number == pr_number {
+                        self.current_timeline = events;
+                    }
+            }
+            AppEvent::PollCycleStarted => {
+                self.notifier.clear_cycle();
+            }
+            AppEvent::ConfigReloaded(new_config) => {
+                self.handle_config_reload(new_config);
+            }
+            AppEvent::StateReloaded(new_prs) => {
+                self.pr_list.set_prs(new_prs);
+                self.sort_prs();
+            }
+            AppEvent::Error(msg) => {
+                eprintln!("Error: {}", msg);
+            }
+        }
+    }
+
+    fn handle_config_reload(&mut self, new_config: AppConfig) {
+        self.config = new_config;
+        if self.is_writer {
+            if let Some(task) = self.polling_task.take() {
+                task.abort();
+            }
+            let polling_worker = PollingWorker::new(
+                self.config.clone(),
+                self.github.clone(),
+                self.event_tx.clone(),
+            );
+            self.polling_task = Some(tokio::spawn(polling_worker.start()));
+        }
+    }
+
+    pub async fn merge_prs(&mut self, new_prs: Vec<PullRequest>, is_detail: bool) {
+        if !is_detail {
+            self.last_refresh = Some(std::time::Instant::now());
+        }
+        
         if is_detail {
             if let Some(new_pr) = new_prs.first()
-                && let Some(old_pr) = self.prs.iter_mut().find(|p| p.id == new_pr.id) {
+                && let Some(old_pr) = self.pr_list.items_mut().iter_mut().find(|p| p.id == new_pr.id) {
                     self.notifier.notify_pr_update(old_pr, new_pr);
                     let last_seen = old_pr.last_seen_at.clone();
                     *old_pr = new_pr.clone();
                     old_pr.last_seen_at = last_seen;
             }
         } else {
+            let mut current_prs = self.pr_list.items().to_vec();
             for new_pr in new_prs {
-                if let Some(old_pr) = self.prs.iter_mut().find(|p| p.id == new_pr.id) {
+                if let Some(old_pr) = current_prs.iter_mut().find(|p| p.id == new_pr.id) {
                     self.notifier.notify_pr_update(old_pr, &new_pr);
                     let last_seen = old_pr.last_seen_at.clone();
                     *old_pr = new_pr.clone();
                     old_pr.last_seen_at = last_seen;
                 } else {
                     self.notifier.notify_new_pr(&new_pr);
-                    self.prs.push(new_pr);
+                    current_prs.push(new_pr);
                 }
             }
-            // Sort by updated_at descending
-            self.prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            self.pr_list.set_prs(current_prs);
+            self.sort_prs();
+            self.check_auto_unfollow();
             self.trigger_details_fetch().await;
         }
     }
 
-    async fn handle_key(&mut self, key: event::KeyEvent) {
-        let old_index = self.selected_index;
-
-        match self.mode {
-            AppMode::Search => {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.mode = AppMode::Normal;
-                        self.input_buffer.clear();
-                    }
-                    KeyCode::Enter => {
-                        self.mode = AppMode::Normal;
-                    }
-                    KeyCode::Backspace => {
-                        self.input_buffer.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        self.input_buffer.push(c);
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            AppMode::Follow => {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.mode = AppMode::Normal;
-                        self.input_buffer.clear();
-                    }
-                    KeyCode::Enter => {
-                        let input = self.input_buffer.clone();
-                        self.input_buffer.clear();
-                        self.mode = AppMode::Normal;
-                        self.follow_pr(&input).await;
-                    }
-                    KeyCode::Backspace => {
-                        self.input_buffer.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        self.input_buffer.push(c);
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('/') => {
-                self.mode = AppMode::Search;
-            }
-            KeyCode::Char('f') if self.is_writer => {
-                self.mode = AppMode::Follow;
-            }
-            KeyCode::Char('S') => {
-                self.mode = AppMode::Settings;
-            }
-            KeyCode::Char('A') => {
-                self.mode = AppMode::Archive;
-            }
-            KeyCode::Esc => {
-                self.mode = AppMode::Normal;
-            }
-            KeyCode::Char('j') | KeyCode::Down if self.selected_index < self.prs.len() - 1 => {
-                self.selected_index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.selected_index > 0 => {
-                self.selected_index -= 1;
-            }
-            KeyCode::Char('g') => self.selected_index = 0,
-            KeyCode::Char('G') => self.selected_index = self.prs.len().saturating_sub(1),
-            KeyCode::Char('m') if self.is_writer => {
-                if let Some(pr) = self.prs.get_mut(self.selected_index) {
-                    pr.last_seen_at = Some(pr.updated_at.clone());
-                    let _ = self.state_repo.save_state(&self.prs);
-                }
-            }
-            KeyCode::Char('M') if self.is_writer => {
-                for pr in &mut self.prs {
-                    pr.last_seen_at = Some(pr.updated_at.clone());
-                }
-                let _ = self.state_repo.save_state(&self.prs);
-            }
-            KeyCode::Char('u') if self.is_writer && self.selected_index < self.prs.len() => {
-                let pr = self.prs.remove(self.selected_index);
-                if self.selected_index >= self.prs.len() && !self.prs.is_empty() {
-                    self.selected_index = self.prs.len() - 1;
-                }
-                
-                // Archive it
-                if let Ok(mut archive) = self.state_repo.load_archive() {
-                    archive.push(pr);
-                    let _ = self.state_repo.save_archive(&archive);
-                }
-                let _ = self.state_repo.save_state(&self.prs);
-            }
-            _ => {}
-        }
-
-        if old_index != self.selected_index {
-            self.trigger_details_fetch().await;
-        }
-    }
-
-    async fn follow_pr(&mut self, input: &str) {
-        // Simple parser
-        // https://github.com/owner/repo/pull/123 -> owner, repo, 123
-        // owner/repo#123 -> owner, repo, 123
+    pub fn check_auto_unfollow(&mut self) {
+        if !self.is_writer { return; }
         
+        let timeout = self.config.unfollow_timeout_mins;
+        let mut to_remove = Vec::new();
+        
+        for (i, pr) in self.pr_list.items().iter().enumerate() {
+            if crate::domain::lifecycle::should_auto_unfollow(pr, timeout) {
+                to_remove.push(i);
+            }
+        }
+        
+        // Remove from highest index to lowest to avoid index shifts
+        let mut current_prs = self.pr_list.items().to_vec();
+        for &i in to_remove.iter().rev() {
+            let pr = current_prs.remove(i);
+            self.archive_list.insert_at_front(pr.clone());
+            let _ = self.state_repo.archive_pr(pr);
+        }
+        
+        if !to_remove.is_empty() {
+            self.pr_list.set_prs(current_prs);
+            let _ = self.state_repo.save_state(self.pr_list.items());
+        }
+    }
+
+    pub fn sort_prs(&mut self) {
+        let sort_mode = self.sort_mode;
+        let config_user = self.config.current_user.clone();
+        let group_mode = self.config.group_by.clone();
+
+        let mut prs = self.pr_list.items().to_vec();
+        prs.sort_by(|a, b| {
+            // 1. Group sort
+            use crate::config::GroupMode;
+            let group_cmp = match group_mode {
+                GroupMode::None => std::cmp::Ordering::Equal,
+                GroupMode::Repo => a.repo.cmp(&b.repo),
+                GroupMode::Author => a.author.cmp(&b.author),
+                GroupMode::Status => a.status.to_string().cmp(&b.status.to_string()),
+                GroupMode::MyVsOther => {
+                    let a_mine = a.author == config_user;
+                    let b_mine = b.author == config_user;
+                    b_mine.cmp(&a_mine) // true comes before false
+                }
+            };
+
+            if group_cmp != std::cmp::Ordering::Equal {
+                return group_cmp;
+            }
+
+            // 2. Secondary sort
+            match sort_mode {
+                SortMode::Updated => b.updated_at.cmp(&a.updated_at),
+                SortMode::Created => b.created_at.cmp(&a.created_at),
+                SortMode::Repo => a.repo.cmp(&b.repo),
+                SortMode::Priority => {
+                    let a_att = crate::domain::rules::needs_attention(a, &config_user);
+                    let b_att = crate::domain::rules::needs_attention(b, &config_user);
+                    b_att.cmp(&a_att).then_with(|| b.updated_at.cmp(&a.updated_at))
+                }
+            }
+        });
+        self.pr_list.set_prs(prs);
+    }
+
+    pub async fn follow_pr(&mut self, input: &str) {
         let (repo, number) = if input.starts_with("http") {
             let parts: Vec<&str> = input.split('/').collect();
             if parts.len() >= 7 {
@@ -335,15 +398,14 @@ impl App {
         }
     }
 
-    async fn trigger_details_fetch(&mut self) {
-        if let Some(pr) = self.prs.get(self.selected_index) {
+    pub async fn trigger_details_fetch(&mut self) {
+        if let Some(pr) = self.pr_list.selected_pr() {
             let tx = self.event_tx.clone();
             let github = self.github.clone();
             let repo = pr.repo.clone();
             let number = pr.number;
             
             tokio::spawn(async move {
-                // Fetch full details to get review status and CI status which might be missing from search
                 if let Ok(full_pr) = github.fetch_pr_details(&repo, number).await {
                     let _ = tx.send(AppEvent::PrsUpdated { 
                         query_name: "detail".to_string(), 

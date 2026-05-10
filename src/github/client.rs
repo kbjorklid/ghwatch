@@ -1,7 +1,7 @@
 use anyhow::{Result, Context};
 use async_trait::async_trait;
 use crate::domain::ports::GithubProvider;
-use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus, CheckRun, TimelineEvent};
+use crate::domain::pr::{PullRequest, CheckRun, TimelineEvent};
 use crate::github::models::{RawPullRequest, RawCheckRun, RawTimelineEvent};
 use tokio::process::Command;
 use serde_json;
@@ -26,11 +26,18 @@ impl GhCliClient {
     }
 
     async fn run_gh(&self, args: &[&str]) -> Result<String> {
+        let start = std::time::Instant::now();
         let output = Command::new("gh")
             .args(args)
             .output()
             .await
             .context("Failed to execute gh CLI")?;
+
+        let duration = start.elapsed().as_millis() as u64;
+        let command_str = format!("gh {}", args.join(" "));
+        let exit_code = output.status.code().unwrap_or(-1);
+        
+        crate::logging::record_gh_call(command_str, exit_code, duration);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -54,7 +61,7 @@ impl GithubProvider for GhCliClient {
     }
 
     async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
-        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url,reviewRequests";
+        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url,reviewRequests,latestReviews";
         let output = self.run_gh(&["pr", "view", &pr_number.to_string(), "-R", repo, "--json", fields]).await?;
 
         let raw: RawPullRequest = serde_json::from_str(&output)
@@ -86,12 +93,31 @@ impl GithubProvider for GhCliClient {
 
         let raws: Vec<RawTimelineEvent> = serde_json::from_str(&output)?;
 
-        Ok(raws.into_iter().map(|r| TimelineEvent {
-            id: r.id.unwrap_or_default(),
-            event_type: r.typename,
-            actor: r.actor.map(|a| a.login).unwrap_or_else(|| "unknown".to_string()),
-            created_at: r.created_at.unwrap_or_default(),
-            content: None, // Simplified for now
+        Ok(raws.into_iter().map(|r| {
+            let content = match r.typename.as_str() {
+                "IssueComment" => r.body.clone(),
+                "PullRequestReview" => {
+                    let state = r.state.clone().unwrap_or_else(|| "COMMENTED".to_string());
+                    let body = r.body.as_ref().map(|b| format!(": {}", b)).unwrap_or_default();
+                    Some(format!("{}{}", state, body))
+                }
+                "PullRequestReviewThread" => Some("started a review thread".to_string()),
+                "MergedEvent" => Some("merged this pull request".to_string()),
+                "ClosedEvent" => Some("closed this pull request".to_string()),
+                "ReopenedEvent" => Some("reopened this pull request".to_string()),
+                "LabeledEvent" => r.label.as_ref().map(|l| format!("added label: {}", l.name)),
+                "UnlabeledEvent" => r.label.as_ref().map(|l| format!("removed label: {}", l.name)),
+                "Commit" => r.message.clone(),
+                _ => None,
+            };
+
+            TimelineEvent {
+                id: r.id.unwrap_or_default(),
+                event_type: r.typename,
+                actor: r.actor.map(|a| a.login).unwrap_or_else(|| "unknown".to_string()),
+                created_at: r.created_at.unwrap_or_default(),
+                content,
+            }
         }).collect())
     }
 
@@ -109,47 +135,15 @@ impl GithubProvider for GhCliClient {
         self.rate_limit.update(status.clone());
         Ok(status)
     }
-}
 
-impl From<RawPullRequest> for PullRequest {
-    fn from(raw: RawPullRequest) -> Self {
-        PullRequest {
-            id: raw.id,
-            number: raw.number,
-            title: raw.title,
-            author: raw.author.login,
-            repo: raw.repository.map(|r| r.name_with_owner)
-                .or(raw.head_repository.map(|r| r.name_with_owner))
-                .unwrap_or_default(),
-            status: match raw.state.to_uppercase().as_str() {
-                "OPEN" => PRStatus::Open,
-                "MERGED" => PRStatus::Merged,
-                _ => PRStatus::Closed,
-            },
-            created_at: raw.created_at,
-            updated_at: raw.updated_at,
-            additions: raw.additions.unwrap_or(0),
-            deletions: raw.deletions.unwrap_or(0),
-            review_status: match raw.review_decision.as_deref() {
-                Some("APPROVED") => ReviewStatus::Approved,
-                Some("CHANGES_REQUESTED") => ReviewStatus::ChangesRequested,
-                _ => ReviewStatus::Pending,
-            },
-            comment_count: raw.comments_count_search.or(raw.comments.map(|c| c.len() as u32)).unwrap_or(0),
-            ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state.to_uppercase()) {
-                Some(s) if s == "SUCCESS" => CIStatus::Passing,
-                Some(s) if s == "FAILURE" || s == "ERROR" => CIStatus::Failing,
-                Some(s) if s == "PENDING" => CIStatus::Pending,
-                _ => CIStatus::Skipped,
-            },
-            head_ref: raw.head_ref_oid.unwrap_or_default(),
-            body: raw.body,
-            requested_reviewers: raw.review_requests.unwrap_or_default().into_iter()
-                .filter_map(|r| r.requested_reviewer)
-                .filter_map(|rr| rr.login)
-                .collect(),
-            last_seen_at: None,
-        }
+    async fn fetch_current_user(&self) -> Result<String> {
+        let output = self.run_gh(&["api", "user", "--jq", ".login"]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    async fn open_pr_in_browser(&self, url: &str) -> Result<()> {
+        self.run_gh(&["pr", "view", url, "--web"]).await?;
+        Ok(())
     }
 }
 
@@ -157,6 +151,7 @@ impl From<RawPullRequest> for PullRequest {
 mod tests {
     use super::*;
     use crate::github::models::*;
+    use crate::domain::pr::{PRStatus, ReviewStatus, CIStatus};
 
     #[test]
     fn test_raw_to_pr_conversion() {
@@ -187,6 +182,7 @@ mod tests {
                     })
                 }
             ]),
+            latest_reviews: None,
         };
 
         let pr: PullRequest = raw.into();

@@ -35,7 +35,9 @@ mod tests {
             ci_status: CIStatus::Passing,
             head_ref: "".to_string(),
             body: "".to_string(),
+            url: "".to_string(),
             requested_reviewers: vec![],
+            reviewers: vec![],
             last_seen_at: None,
         }
     }

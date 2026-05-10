@@ -1,4 +1,5 @@
 use crate::domain::pr::{PullRequest, PRStatus};
+use chrono::{DateTime, Utc, Duration};
 
 pub fn is_unread(pr: &PullRequest) -> bool {
     match &pr.last_seen_at {
@@ -12,19 +13,15 @@ pub fn should_auto_unfollow(pr: &PullRequest, timeout_mins: u64) -> bool {
         return false;
     }
 
-    // Since we don't have the exact transition time to terminal state in PullRequest (updated_at is just last change),
-    // we use updated_at as a proxy for the transition time.
-    // In a real app, we might want to track the transition time explicitly.
-    
-    // If timeout is 0, it means immediate removal.
-    if timeout_mins == 0 {
-        return true;
-    }
+    let updated_at = match DateTime::parse_from_rfc3339(&pr.updated_at) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(_) => return false, // If we can't parse, don't unfollow yet
+    };
 
-    // Without a date library, parsing ISO 8601 is tedious.
-    // I'll just check if it's terminal for now and let the App decide based on real time.
+    let now = Utc::now();
+    let elapsed = now.signed_duration_since(updated_at);
     
-    pr.status != PRStatus::Open
+    elapsed >= Duration::minutes(timeout_mins as i64)
 }
 
 #[cfg(test)]
@@ -50,7 +47,9 @@ mod tests {
             ci_status: CIStatus::Passing,
             head_ref: "".to_string(),
             body: "".to_string(),
+            url: "".to_string(),
             requested_reviewers: vec![],
+            reviewers: vec![],
             last_seen_at: None,
         }
     }
@@ -65,5 +64,25 @@ mod tests {
 
         pr.last_seen_at = Some("2024-05-01T11:30:00Z".to_string());
         assert!(!is_unread(&pr)); // updated at 11:00 < seen at 11:30
+    }
+
+    #[test]
+    fn test_should_auto_unfollow() {
+        let mut pr = create_test_pr();
+        
+        // Open PR never unfollows
+        pr.status = PRStatus::Open;
+        assert!(!should_auto_unfollow(&pr, 0));
+        
+        // Terminal PR with 0 timeout unfollows immediately
+        pr.status = PRStatus::Merged;
+        pr.updated_at = Utc::now().to_rfc3339();
+        assert!(should_auto_unfollow(&pr, 0));
+        
+        // Terminal PR with timeout
+        let now = Utc::now();
+        pr.updated_at = (now - Duration::minutes(10)).to_rfc3339();
+        assert!(should_auto_unfollow(&pr, 5));
+        assert!(!should_auto_unfollow(&pr, 15));
     }
 }

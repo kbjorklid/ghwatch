@@ -2,6 +2,26 @@ use serde::{Deserialize, Serialize};
 
 pub mod watcher;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
+pub enum GroupMode {
+    #[default]
+    None,
+    Repo,
+    Author,
+    Status,
+    MyVsOther,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Column {
+    Author,
+    Age,
+    Diff,
+    Review,
+    Comments,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub queries: Vec<QueryConfig>,
@@ -10,6 +30,14 @@ pub struct AppConfig {
     pub use_nerd_fonts: bool,
     pub current_user: String,
     pub unfollow_timeout_mins: u64,
+    #[serde(default = "default_true")]
+    pub show_status_bar: bool,
+    #[serde(default)]
+    pub group_by: GroupMode,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_columns")]
+    pub visible_columns: Vec<Column>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +50,32 @@ pub struct QueryConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
+fn default_columns() -> Vec<Column> {
+    vec![
+        Column::Author,
+        Column::Age,
+        Column::Diff,
+        Column::Review,
+        Column::Comments,
+    ]
+}
+
+
+impl AppConfig {
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&content)?;
+        Ok(config)
+    }
 }
 
 impl Default for AppConfig {
@@ -39,6 +93,10 @@ impl Default for AppConfig {
             use_nerd_fonts: true,
             current_user: String::new(),
             unfollow_timeout_mins: 60,
+            show_status_bar: true,
+            group_by: GroupMode::None,
+            theme: "dark".to_string(),
+            visible_columns: default_columns(),
         }
     }
 }

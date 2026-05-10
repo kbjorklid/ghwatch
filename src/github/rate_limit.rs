@@ -40,3 +40,25 @@ impl RateLimitTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limit_tracker() {
+        let tracker = RateLimitTracker::new();
+        assert_eq!(tracker.get_remaining(), 5000);
+        
+        tracker.update(RateLimitStatus {
+            remaining: 100,
+            limit: 5000,
+            reset_at: 123456,
+        });
+        
+        assert_eq!(tracker.get_remaining(), 100);
+        let status = tracker.get_status();
+        assert_eq!(status.remaining, 100);
+        assert_eq!(status.reset_at, 123456);
+    }
+}

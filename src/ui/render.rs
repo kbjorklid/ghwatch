@@ -1,238 +1,199 @@
 use crate::domain::pr::PullRequest;
 use anyhow::Result;
 use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    backend::Backend,
+    layout::{Constraint, Direction, Layout},
+    style::Style,
+    widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use std::io::{self, Stdout};
-use crossterm::{
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+use std::io;
+use crate::config::AppConfig;
+use crate::ui::theme::Theme;
+use crate::ui::components::{
+    list::render_list,
+    detail::render_detail,
+    settings::render_settings,
+    help::render_help,
+    diagnostics::render_diagnostics,
+    status_bar::render_status_bar,
+    archive::render_archive,
 };
 
-pub struct Renderer {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+pub struct Renderer<B: Backend> {
+    terminal: Terminal<B>,
 }
 
-impl Renderer {
-    pub fn new() -> Result<Self> {
-        let backend = CrosstermBackend::new(io::stdout());
+pub struct DrawContext<'a> {
+    pub prs: &'a [PullRequest],
+    pub selected_index: usize,
+    pub settings_selected_index: usize,
+    pub checks: &'a [crate::domain::pr::CheckRun],
+    pub timeline: &'a [crate::domain::pr::TimelineEvent],
+    pub mode: &'a crate::app::AppMode,
+    pub detail_focused: bool,
+    pub detail_scroll: u16,
+    pub input_buffer: &'a str,
+    pub config: &'a AppConfig,
+    pub last_refresh: Option<std::time::Instant>,
+}
+
+impl<B: Backend> Renderer<B> 
+where 
+    B::Error: std::error::Error + Send + Sync + 'static 
+{
+    pub fn new(backend: B) -> Result<Self> {
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
     }
 
+    pub fn draw(&mut self, ctx: DrawContext) -> Result<()> {
+        let theme = Theme::from_name(&ctx.config.theme);
+
+        self.terminal.draw(|f| {
+            let has_input = matches!(ctx.mode, crate::app::AppMode::Search | crate::app::AppMode::Follow);
+            let show_status = ctx.config.show_status_bar;
+            
+            let constraints = [
+                Constraint::Min(0),
+                if has_input { Constraint::Length(3) } else { Constraint::Length(0) },
+                if show_status { Constraint::Length(1) } else { Constraint::Length(0) },
+            ];
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints.as_ref())
+                .split(f.area());
+
+            match ctx.mode {
+                crate::app::AppMode::Settings => {
+                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                }
+                crate::app::AppMode::Archive => {
+                    render_archive(f, chunks[0], ctx.prs, ctx.selected_index, &theme);
+                }
+                crate::app::AppMode::Help => {
+                    render_help(f, chunks[0], &theme);
+                }
+                crate::app::AppMode::Diagnostic => {
+                    render_diagnostics(f, chunks[0], &theme);
+                }
+                _ => {
+                    let area = chunks[0];
+                    let direction = if area.width < 120 { Direction::Vertical } else { Direction::Horizontal };
+                    let main_chunks = Layout::default()
+                        .direction(direction)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .split(area);
+
+                    render_list(f, main_chunks[0], ctx.prs, ctx.selected_index, ctx.config, &theme);
+                    render_detail(f, main_chunks[1], crate::ui::components::detail::DetailProps {
+                        prs: ctx.prs,
+                        selected_index: ctx.selected_index,
+                        checks: ctx.checks,
+                        timeline: ctx.timeline,
+                        config: ctx.config,
+                        theme: &theme,
+                        detail_focused: ctx.detail_focused,
+                        detail_scroll: ctx.detail_scroll,
+                    });
+                }
+            }
+
+            if has_input {
+                let prompt_label = match ctx.mode {
+                    crate::app::AppMode::Search => "/Search: ",
+                    crate::app::AppMode::Follow => "Follow (URL/Shorthand): ",
+                    _ => "",
+                };
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(" Input (Esc to cancel) ")
+                    .title_style(Style::default().fg(theme.title));
+                let text = Paragraph::new(format!("{}{}", prompt_label, ctx.input_buffer))
+                    .block(block)
+                    .style(Style::default().fg(theme.text));
+                f.render_widget(text, chunks[1]);
+            }
+
+            if show_status {
+                render_status_bar(f, chunks[2], ctx.mode, &theme, ctx.last_refresh);
+            }
+        })?;
+        Ok(())
+    }
+}
+
+pub type CrosstermRenderer = Renderer<ratatui::backend::CrosstermBackend<io::Stdout>>;
+
+impl Renderer<ratatui::backend::CrosstermBackend<io::Stdout>> {
     pub fn init(&mut self) -> Result<()> {
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
         self.terminal.hide_cursor()?;
         Ok(())
     }
 
     pub fn restore(&mut self) -> Result<()> {
-        disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen)?;
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen, crossterm::event::DisableMouseCapture)?;
         self.terminal.show_cursor()?;
         Ok(())
     }
+}
 
-    pub fn draw(&mut self, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent], current_user: &str, mode: &crate::app::AppMode, input_buffer: &str) -> Result<()> {
-        self.terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(0),
-                    if matches!(mode, crate::app::AppMode::Search | crate::app::AppMode::Follow) { Constraint::Length(3) } else { Constraint::Length(0) },
-                ].as_ref())
-                .split(f.area());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus};
+    use crate::app::AppMode;
 
-            match mode {
-                crate::app::AppMode::Settings => {
-                    Self::render_settings(f, chunks[0]);
-                }
-                crate::app::AppMode::Archive => {
-                    Self::render_archive(f, chunks[0]);
-                }
-                _ => {
-                    let main_chunks = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
-                        .split(chunks[0]);
-
-                    Self::render_list(f, main_chunks[0], prs, selected_index, current_user);
-                    Self::render_detail(f, main_chunks[1], prs, selected_index, checks, timeline);
-                }
-            }
-
-            let prompt_label = match mode {
-                crate::app::AppMode::Search => Some("/Search: "),
-                crate::app::AppMode::Follow => Some("Follow (URL/Shorthand): "),
-                _ => None,
-            };
-
-            if let Some(label) = prompt_label {
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Input (Esc to cancel) ");
-                let text = Paragraph::new(format!("{}{}", label, input_buffer))
-                    .block(block);
-                f.render_widget(text, chunks[1]);
-            }
-        })?;
-        Ok(())
-    }
-
-    fn render_settings(f: &mut ratatui::Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Settings (Esc to exit) ");
-        let text = vec![
-            Line::from("Configuration is currently managed via state.toml and config.toml."),
-            Line::from("Hot-reload is enabled for config.toml changes."),
-            Line::from(""),
-            Line::from("Theme selection and visibility toggles coming soon."),
-        ];
-        let paragraph = Paragraph::new(text).block(block);
-        f.render_widget(paragraph, area);
-    }
-
-    fn render_archive(f: &mut ratatui::Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Archive (Esc to exit) ");
-        let text = vec![
-            Line::from("Archived PRs are stored in archive.toml."),
-            Line::from("Rotation is enabled (3 files max, 1MB each)."),
-        ];
-        let paragraph = Paragraph::new(text).block(block);
-        f.render_widget(paragraph, area);
-    }
-
-    fn render_list(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize, current_user: &str) {
-        let icons = crate::ui::icons::Icons::new(false); // Default to false for now
-        let items: Vec<ListItem> = prs
-            .iter()
-            .enumerate()
-            .map(|(i, pr)| {
-                let is_selected = i == selected_index;
-                let is_unread = crate::domain::lifecycle::is_unread(pr);
-                let needs_attention = crate::domain::rules::needs_attention(pr, current_user);
-
-                let mut style = Style::default();
-                if is_selected {
-                    style = style.fg(Color::Yellow);
-                }
-                
-                if is_unread {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-
-                if needs_attention {
-                    style = style.fg(Color::Red);
-                }
-
-                // Line 1: ID, Title, Status
-                let unread_marker = if is_unread { "● " } else { "  " };
-                let attention_marker = if needs_attention { "! " } else { "  " };
-
-                let line1 = Line::from(vec![
-                    Span::styled(unread_marker, Style::default().fg(Color::Blue)),
-                    Span::styled(attention_marker, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("#{} ", pr.number), Style::default().fg(Color::Gray)),
-                    Span::styled(&pr.title, style),
-                ]);
-
-                // Line 2: Author, Age, Diff, Review, Comments
-                let line2 = Line::from(vec![
-                    Span::styled(format!("  {} ", pr.author), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{} ", pr.updated_at), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{}{} {}{} ", icons.additions(), pr.additions, icons.deletions(), pr.deletions), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{} ", pr.review_status), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{} {} ", icons.comment(), pr.comment_count), Style::default().fg(Color::DarkGray)),
-                ]);
-
-                ListItem::new(vec![line1, line2])
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(" Pull Requests "))
-            .highlight_style(Style::default().bg(Color::DarkGray));
-
-        f.render_widget(list, area);
-    }
-
-    fn render_detail(f: &mut ratatui::Frame, area: Rect, prs: &[PullRequest], selected_index: usize, checks: &[crate::domain::pr::CheckRun], timeline: &[crate::domain::pr::TimelineEvent]) {
-        if let Some(pr) = prs.get(selected_index) {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" #{} - {} ", pr.number, pr.title));
-            
-            let mut detail_text = Vec::new();
-            
-            // Header Info
-            detail_text.push(Line::from(vec![
-                Span::styled("Author: ", Style::default().fg(Color::Gray)),
-                Span::raw(&pr.author),
-                Span::raw(" | "),
-                Span::styled("Repo: ", Style::default().fg(Color::Gray)),
-                Span::raw(&pr.repo),
-            ]));
-            
-            detail_text.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::raw(format!("{} ", pr.status)),
-                Span::styled("Review: ", Style::default().fg(Color::Gray)),
-                Span::raw(format!("{} ", pr.review_status)),
-                Span::styled("CI: ", Style::default().fg(Color::Gray)),
-                Span::raw(format!("{} ", pr.ci_status)),
-            ]));
-            
-            detail_text.push(Line::from(""));
-
-            // CI Checks
-            if !checks.is_empty() {
-                detail_text.push(Line::from(Span::styled("CI Checks:", Style::default().add_modifier(Modifier::BOLD))));
-                for check in checks {
-                    let color = match check.conclusion.as_deref() {
-                        Some("success") => Color::Green,
-                        Some("failure") | Some("error") => Color::Red,
-                        _ => Color::Yellow,
-                    };
-                    detail_text.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("{} ", check.conclusion.as_deref().unwrap_or(&check.status)), Style::default().fg(color)),
-                        Span::raw(&check.name),
-                    ]));
-                }
-                detail_text.push(Line::from(""));
-            }
-
-            // Timeline
-            if !timeline.is_empty() {
-                detail_text.push(Line::from(Span::styled("Activity:", Style::default().add_modifier(Modifier::BOLD))));
-                for event in timeline.iter().take(10) { // Limit to 10 for now
-                    detail_text.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("{} ", event.event_type), Style::default().fg(Color::Cyan)),
-                        Span::raw(format!("by {} ", event.actor)),
-                        Span::styled(&event.created_at, Style::default().fg(Color::DarkGray)),
-                    ]));
-                }
-                detail_text.push(Line::from(""));
-            }
-
-            // Body
-            detail_text.push(Line::from(Span::styled("Description:", Style::default().add_modifier(Modifier::BOLD))));
-            detail_text.push(Line::from(pr.body.as_str()));
-            
-            let paragraph = Paragraph::new(detail_text)
-                .block(block)
-                .wrap(Wrap { trim: true });
-            
-            f.render_widget(paragraph, area);
-        } else {
-            let block = Block::default().borders(Borders::ALL).title(" Detail ");
-            f.render_widget(block, area);
+    fn create_test_pr() -> PullRequest {
+        PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "alice".to_string(),
+            repo: "org/repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "2024-05-01T10:00:00Z".to_string(),
+            updated_at: "2024-05-01T10:00:00Z".to_string(),
+            additions: 10,
+            deletions: 5,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            ci_status: CIStatus::Passing,
+            head_ref: "sha123".to_string(),
+            body: "Body text".to_string(),
+            url: "https://github.com/org/repo/pull/1".to_string(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
         }
+    }
+
+    #[test]
+    fn test_draw_normal_mode() {
+        let backend = TestBackend::new(80, 24);
+        let mut renderer = Renderer::new(backend).unwrap();
+        let prs = vec![create_test_pr()];
+        let config = AppConfig::default();
+        
+        renderer.draw(DrawContext {
+            prs: &prs,
+            selected_index: 0,
+            settings_selected_index: 0,
+            checks: &[],
+            timeline: &[],
+            mode: &AppMode::Normal,
+            detail_focused: false,
+            detail_scroll: 0,
+            input_buffer: "",
+            config: &config,
+            last_refresh: None,
+        }).unwrap();
     }
 }
