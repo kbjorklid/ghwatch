@@ -2,10 +2,11 @@ use crate::domain::pr::PullRequest;
 use anyhow::Result;
 use ratatui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     widgets::{Block, Borders, Paragraph},
     Terminal,
+    Frame,
 };
 use std::io;
 use crate::config::AppConfig;
@@ -28,6 +29,7 @@ pub struct DrawContext<'a> {
     pub prs: &'a [PullRequest],
     pub selected_index: usize,
     pub settings_selected_index: usize,
+    pub diagnostic_selected_index: usize,
     pub checks: &'a [crate::domain::pr::CheckRun],
     pub timeline: &'a [crate::domain::pr::TimelineEvent],
     pub mode: &'a crate::app::AppMode,
@@ -36,6 +38,7 @@ pub struct DrawContext<'a> {
     pub input_buffer: &'a str,
     pub config: &'a AppConfig,
     pub last_refresh: Option<std::time::Instant>,
+    pub error_message: Option<&'a str>,
 }
 
 impl<B: Backend> Renderer<B> 
@@ -45,6 +48,10 @@ where
     pub fn new(backend: B) -> Result<Self> {
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
+    }
+
+    pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
+        &mut self.terminal
     }
 
     pub fn draw(&mut self, ctx: DrawContext) -> Result<()> {
@@ -76,7 +83,11 @@ where
                     render_help(f, chunks[0], &theme);
                 }
                 crate::app::AppMode::Diagnostic => {
-                    render_diagnostics(f, chunks[0], &theme);
+                    render_diagnostics(f, chunks[0], ctx.diagnostic_selected_index, &theme);
+                }
+                crate::app::AppMode::LogDetail => {
+                    render_diagnostics(f, chunks[0], ctx.diagnostic_selected_index, &theme);
+                    render_log_detail(f, f.area(), ctx.diagnostic_selected_index, &theme);
                 }
                 _ => {
                     let area = chunks[0];
@@ -119,11 +130,52 @@ where
             }
 
             if show_status {
-                render_status_bar(f, chunks[2], ctx.mode, &theme, ctx.last_refresh);
+                render_status_bar(f, chunks[2], ctx.mode, &theme, ctx.last_refresh, ctx.error_message);
             }
         })?;
         Ok(())
     }
+}
+
+fn render_log_detail(f: &mut Frame, area: Rect, selected_index: usize, theme: &Theme) {
+    let calls = crate::logging::get_gh_calls();
+    let calls_reversed: Vec<_> = calls.iter().rev().collect();
+    
+    if let Some(call) = calls_reversed.get(selected_index) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(format!(" Output: {} ", call.command))
+            .title_style(Style::default().fg(theme.title));
+            
+        let modal_area = centered_rect(80, 80, area);
+        f.render_widget(ratatui::widgets::Clear, modal_area);
+        
+        let text = Paragraph::new(call.output.as_str())
+            .block(block)
+            .wrap(ratatui::widgets::Wrap { trim: false });
+        f.render_widget(text, modal_area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 pub type CrosstermRenderer = Renderer<ratatui::backend::CrosstermBackend<io::Stdout>>;
@@ -186,6 +238,7 @@ mod tests {
             prs: &prs,
             selected_index: 0,
             settings_selected_index: 0,
+            diagnostic_selected_index: 0,
             checks: &[],
             timeline: &[],
             mode: &AppMode::Normal,
@@ -194,6 +247,7 @@ mod tests {
             input_buffer: "",
             config: &config,
             last_refresh: None,
+            error_message: None,
         }).unwrap();
     }
 }

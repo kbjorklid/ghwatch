@@ -7,7 +7,7 @@ pub async fn handle_event<B: Backend>(app: &mut App<B>, event: Event)
 where B::Error: std::error::Error + Send + Sync + 'static 
 {
     match event {
-        Event::Key(key) => handle_key(app, key).await,
+        Event::Key(key) if key.kind == event::KeyEventKind::Press => handle_key(app, key).await,
         Event::Mouse(mouse) => handle_mouse(app, mouse).await,
         _ => {}
     }
@@ -44,6 +44,7 @@ where B::Error: std::error::Error + Send + Sync + 'static
         AppMode::Archive => handle_archive_key(app, key),
         AppMode::Settings => handle_settings_key(app, key),
         AppMode::Diagnostic => handle_diagnostic_key(app, key),
+        AppMode::LogDetail => handle_log_detail_key(app, key),
         AppMode::Normal => handle_normal_key(app, key).await,
     }
 
@@ -117,6 +118,10 @@ where B::Error: std::error::Error + Send + Sync + 'static
         }
         KeyCode::Char('g') => app.archive_list.set_selected_index(0),
         KeyCode::Char('G') => app.archive_list.set_selected_index(app.archive_list.items().len().saturating_sub(1)),
+        KeyCode::Char('d') if app.is_writer && app.archive_list.selected_index() < app.archive_list.items().len() 
+            && app.archive_list.remove_selected().is_some() => {
+                let _ = app.state_repo.save_archive(app.archive_list.items());
+        }
         KeyCode::Esc => {
             app.mode = AppMode::Normal;
         }
@@ -166,6 +171,7 @@ where B::Error: std::error::Error + Send + Sync + 'static
             }
         }
         KeyCode::Char('D') => {
+            app.diagnostic_selected_index = 0;
             app.mode = AppMode::Diagnostic;
         }
         KeyCode::Esc => {
@@ -182,8 +188,40 @@ where B::Error: std::error::Error + Send + Sync + 'static
 fn handle_diagnostic_key<B: Backend>(app: &mut App<B>, key: KeyEvent) 
 where B::Error: std::error::Error + Send + Sync + 'static 
 {
-    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-        app.mode = AppMode::Settings;
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            let max = crate::logging::get_gh_calls().len();
+            if app.diagnostic_selected_index < max.saturating_sub(1) {
+                app.diagnostic_selected_index += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up
+            if app.diagnostic_selected_index > 0 => {
+                app.diagnostic_selected_index -= 1;
+        }
+        KeyCode::Enter => {
+            app.mode = AppMode::LogDetail;
+        }
+        KeyCode::Char('y') => {
+            let calls = crate::logging::get_gh_calls();
+            let calls_reversed: Vec<_> = calls.iter().rev().collect();
+            if let Some(call) = calls_reversed.get(app.diagnostic_selected_index) {
+                let cmd = call.command.clone();
+                app.copy_to_clipboard(&cmd);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Settings;
+        }
+        _ => {}
+    }
+}
+
+fn handle_log_detail_key<B: Backend>(app: &mut App<B>, key: KeyEvent) 
+where B::Error: std::error::Error + Send + Sync + 'static 
+{
+    if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+        app.mode = AppMode::Diagnostic;
     }
 }
 
@@ -234,6 +272,12 @@ where B::Error: std::error::Error + Send + Sync + 'static
                 tokio::spawn(async move {
                     let _ = github.open_pr_in_browser(&url).await;
                 });
+            }
+        }
+        KeyCode::Char('y') => {
+            if let Some(pr) = app.pr_list.selected_pr() {
+                let url = pr.url.clone();
+                app.copy_to_clipboard(&url);
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {

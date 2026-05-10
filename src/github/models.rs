@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus, Reviewer};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawPullRequest {
     pub id: String,
     pub number: u32,
@@ -19,6 +19,7 @@ pub struct RawPullRequest {
     #[serde(rename = "commentsCount")]
     pub comments_count_search: Option<u32>,
     pub comments: Option<Vec<RawComment>>,
+    pub review_comments: Option<u32>,
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
     #[serde(rename = "reviewDecision")]
@@ -71,14 +72,25 @@ impl From<RawPullRequest> for PullRequest {
                 .collect()
         }).unwrap_or_default();
 
+        let repo = raw.repository.and_then(|r| if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) })
+            .or_else(|| raw.head_repository.and_then(|r| if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) }))
+            .unwrap_or_else(|| {
+                // Fallback: parse from URL
+                // https://github.com/owner/repo/pull/1
+                let parts: Vec<&str> = raw.url.split('/').collect();
+                if parts.len() >= 5 {
+                    format!("{}/{}", parts[3], parts[4])
+                } else {
+                    "unknown".to_string()
+                }
+            });
+
         PullRequest {
             id: raw.id,
             number: raw.number,
             title: raw.title,
             author: raw.author.login,
-            repo: raw.repository.map(|r| r.name_with_owner)
-                .or(raw.head_repository.map(|r| r.name_with_owner))
-                .unwrap_or_default(),
+            repo,
             status: match raw.state.to_uppercase().as_str() {
                 "OPEN" => PRStatus::Open,
                 "MERGED" => PRStatus::Merged,
@@ -93,8 +105,8 @@ impl From<RawPullRequest> for PullRequest {
                 Some("CHANGES_REQUESTED") => ReviewStatus::ChangesRequested,
                 _ => ReviewStatus::Pending,
             },
-            comment_count: raw.comments_count_search.or(raw.comments.map(|c| c.len() as u32)).unwrap_or(0),
-            ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state.to_uppercase()) {
+            comment_count: raw.comments_count_search.or(raw.comments.map(|c| c.len() as u32)).unwrap_or(0) + raw.review_comments.unwrap_or(0),
+            ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state().to_uppercase()) {
                 Some(s) if s == "SUCCESS" => CIStatus::Passing,
                 Some(s) if s == "FAILURE" || s == "ERROR" => CIStatus::Failing,
                 Some(s) if s == "PENDING" => CIStatus::Pending,
@@ -110,47 +122,85 @@ impl From<RawPullRequest> for PullRequest {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawReview {
     pub author: RawAuthor,
     pub state: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawReviewRequest {
     #[serde(rename = "requestedReviewer")]
     pub requested_reviewer: Option<RawRequestedReviewer>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawRequestedReviewer {
     #[serde(rename = "__typename")]
     pub typename: String,
     pub login: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawAuthor {
     pub login: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawRepository {
     #[serde(rename = "nameWithOwner")]
     pub name_with_owner: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawComment {
     pub id: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RawStatusCheckRollup {
-    pub state: String,
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum RawStatusCheckRollup {
+    Summary { state: String },
+    List(Vec<serde_json::Value>),
 }
 
-#[derive(Debug, Deserialize)]
+impl RawStatusCheckRollup {
+    pub fn state(&self) -> String {
+        match self {
+            RawStatusCheckRollup::Summary { state } => state.clone(),
+            RawStatusCheckRollup::List(list) => {
+                if list.is_empty() {
+                    return "EXPECTED".to_string(); // Map to Skipped
+                }
+                
+                let mut has_failure = false;
+                let mut has_pending = false;
+                
+                for val in list {
+                    if let Some(conclusion) = val.get("conclusion").and_then(|v| v.as_str()) {
+                        match conclusion {
+                            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {},
+                            _ => has_failure = true,
+                        }
+                    } else if let Some(status) = val.get("status").and_then(|v| v.as_str())
+                        && status != "COMPLETED" {
+                            has_pending = true;
+                    }
+                }
+                
+                if has_failure {
+                    "FAILURE".to_string()
+                } else if has_pending {
+                    "PENDING".to_string()
+                } else {
+                    "SUCCESS".to_string()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawCheckRun {
     pub name: String,
     pub status: String,
@@ -158,7 +208,7 @@ pub struct RawCheckRun {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawTimelineEvent {
     pub id: Option<String>,
     #[serde(rename = "__typename")]
@@ -172,7 +222,7 @@ pub struct RawTimelineEvent {
     pub label: Option<RawLabel>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawLabel {
     pub name: String,
 }

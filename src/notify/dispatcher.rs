@@ -25,6 +25,10 @@ impl NotificationDispatcher {
         }
     }
 
+    pub fn clear_history(&mut self) {
+        self.last_notifications.clear();
+    }
+
     fn should_notify(&mut self, pr_id: &str, event: NotificationEvent) -> bool {
         let set = self.last_notifications.entry(pr_id.to_string()).or_default();
         if set.contains(&event) {
@@ -46,7 +50,9 @@ impl NotificationDispatcher {
 
 impl NotificationService for NotificationDispatcher {
     fn clear_cycle(&mut self) {
-        self.last_notifications.clear();
+        // We no longer clear the history here to prevent repetitive notifications
+        // across poll cycles. The history ensures we only notify once per PR/Event type
+        // until something changes or the app restarts.
     }
 
     fn notify_pr_update(&mut self, old_pr: &PullRequest, new_pr: &PullRequest) {
@@ -136,13 +142,17 @@ mod tests {
         let mut dispatcher = NotificationDispatcher::new(true);
         let pr = create_test_pr();
         
-        // First time should notify (returns true internally in should_notify)
+        // First time should notify
         assert!(dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
-        // Second time same cycle should NOT notify
+        // Second time should NOT notify (persists across cycles)
         assert!(!dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
         
-        // Clear cycle should allow notification again
+        // clear_cycle should NOT clear history now
         dispatcher.clear_cycle();
+        assert!(!dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
+
+        // clear_history should clear it
+        dispatcher.clear_history();
         assert!(dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
     }
 }

@@ -11,6 +11,7 @@ pub struct GhCall {
     pub command: String,
     pub exit_code: i32,
     pub duration_ms: u64,
+    pub output: String,
 }
 
 static GH_CALL_LOG: Mutex<Option<VecDeque<GhCall>>> = Mutex::new(None);
@@ -35,7 +36,7 @@ pub fn init_logging(log_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn record_gh_call(command: String, exit_code: i32, duration_ms: u64) {
+pub fn record_gh_call(command: String, exit_code: i32, duration_ms: u64, output: String) {
     let mut log = GH_CALL_LOG.lock().unwrap();
     if let Some(ref mut deque) = *log {
         if deque.len() >= 100 {
@@ -46,6 +47,7 @@ pub fn record_gh_call(command: String, exit_code: i32, duration_ms: u64) {
             command,
             exit_code,
             duration_ms,
+            output,
         });
     }
 }
@@ -69,11 +71,12 @@ mod tests {
             *log = Some(VecDeque::with_capacity(100));
         }
 
-        record_gh_call("gh api user".to_string(), 0, 150);
+        record_gh_call("gh api user".to_string(), 0, 150, "{}".to_string());
         let calls = get_gh_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].command, "gh api user");
         assert_eq!(calls[0].exit_code, 0);
         assert_eq!(calls[0].duration_ms, 150);
+        assert_eq!(calls[0].output, "{}");
     }
 }

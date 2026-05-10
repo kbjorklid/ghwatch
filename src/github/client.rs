@@ -36,36 +36,217 @@ impl GhCliClient {
         let duration = start.elapsed().as_millis() as u64;
         let command_str = format!("gh {}", args.join(" "));
         let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let log_output = if output.status.success() { stdout.clone() } else { stderr.clone() };
         
-        crate::logging::record_gh_call(command_str, exit_code, duration);
+        crate::logging::record_gh_call(command_str, exit_code, duration, log_output);
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!("gh CLI error: {}", stderr));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(stdout)
     }
 }
 
 #[async_trait]
 impl GithubProvider for GhCliClient {
     async fn fetch_prs_by_query(&self, query: &str) -> Result<Vec<PullRequest>> {
-        let fields = "id,number,title,author,repository,state,createdAt,updatedAt,body,commentsCount,url";
-        let output = self.run_gh(&["search", "prs", query, "--json", fields]).await?;
-        
-        let raws: Vec<RawPullRequest> = serde_json::from_str(&output)
-            .context("Failed to parse gh search prs JSON")?;
+        let gql_query = r#"
+            query($q: String!) {
+                search(query: $q, type: ISSUE, first: 100) {
+                    nodes {
+                        ... on PullRequest {
+                            id
+                            number
+                            title
+                            author { login }
+                            repository { nameWithOwner }
+                            state
+                            createdAt
+                            updatedAt
+                            body
+                            url
+                            additions
+                            deletions
+                            reviewDecision
+                            headRefOid
+                            comments { totalCount }
+                            reviewThreads { totalCount }
+                            statusCheckRollup: statusCheckRollup {
+                                state
+                            }
+                            reviewRequests(first: 10) {
+                                nodes {
+                                    requestedReviewer {
+                                        __typename
+                                        ... on User { login }
+                                        ... on Team { name }
+                                    }
+                                }
+                            }
+                            latestReviews(first: 10) {
+                                nodes {
+                                    author { login }
+                                    state
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        "#.to_string();
 
-        Ok(raws.into_iter().map(Into::into).collect())
+        let output = self.run_gh(&["api", "graphql", "-f", &format!("q={}", query), "-f", &format!("query={}", gql_query)]).await?;
+
+        let val: serde_json::Value = serde_json::from_str(&output)
+            .context("Failed to parse GraphQL response")?;
+
+        if let Some(errors) = val.get("errors") {
+            return Err(anyhow::anyhow!("GraphQL error: {}", errors));
+        }
+
+        let nodes = val.get("data")
+            .and_then(|d| d.get("search"))
+            .and_then(|s| s.get("nodes"))
+            .and_then(|n| n.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Unexpected GraphQL response structure"))?;
+
+        let mut prs = Vec::new();
+        for node in nodes {
+            if node.is_null() { continue; }
+
+            // Map GraphQL structure to RawPullRequest structure for compatibility
+            let mut raw_val = node.clone();
+
+            // Extract counts
+            let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+            let review_threads = node.get("reviewThreads").and_then(|r| r.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if let Some(obj) = raw_val.as_object_mut() {
+                obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
+                obj.insert("review_comments".to_string(), serde_json::Value::from(review_threads));
+                
+                // Remove GraphQL specific objects that conflict with RawPullRequest types
+                obj.remove("comments");
+                obj.remove("reviewThreads");
+
+                // Author mapping
+                if let Some(author_obj) = node.get("author").and_then(|a| a.as_object()) {
+                    obj.insert("author".to_string(), serde_json::Value::from(author_obj.clone()));
+                }
+
+                // Repository mapping
+                if let Some(repo_obj) = node.get("repository").and_then(|r| r.as_object()) {
+                    obj.insert("repository".to_string(), serde_json::Value::from(repo_obj.clone()));
+                }
+
+                // Flatten Connections (reviewRequests, latestReviews)
+                for field in &["reviewRequests", "latestReviews"] {
+                    if let Some(nodes) = node.get(*field).and_then(|f| f.get("nodes")) {
+                        obj.insert(field.to_string(), nodes.clone());
+                    }
+                }
+            }
+
+            let raw: RawPullRequest = serde_json::from_value(raw_val.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to map GraphQL node to RawPullRequest: {}. Node: {}", e, raw_val))?;
+            prs.push(raw.into());
+        }
+
+        Ok(prs)
     }
 
-    async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
-        let fields = "id,number,title,author,headRepository,state,createdAt,updatedAt,body,comments,additions,deletions,reviewDecision,statusCheckRollup,headRefOid,url,reviewRequests,latestReviews";
-        let output = self.run_gh(&["pr", "view", &pr_number.to_string(), "-R", repo, "--json", fields]).await?;
 
-        let raw: RawPullRequest = serde_json::from_str(&output)
-            .context("Failed to parse gh pr view JSON")?;
+    async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
+        let (owner, name) = repo.split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("Invalid repo format: {}", repo))?;
+            
+        let gql_query = format!(r#"
+            query {{
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        id
+                        number
+                        title
+                        author {{ login }}
+                        repository {{ nameWithOwner }}
+                        state
+                        createdAt
+                        updatedAt
+                        body
+                        url
+                        additions
+                        deletions
+                        reviewDecision
+                        headRefOid
+                        comments {{ totalCount }}
+                        reviewThreads {{ totalCount }}
+                        statusCheckRollup {{
+                            state
+                        }}
+                        reviewRequests(first: 10) {{
+                            nodes {{
+                                requestedReviewer {{
+                                    ... on User {{ login }}
+                                    ... on Team {{ name }}
+                                }}
+                            }}
+                        }}
+                        latestReviews(first: 10) {{
+                            nodes {{
+                                author {{ login }}
+                                state
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        "#, owner, name, pr_number);
+
+        let output = self.run_gh(&["api", "graphql", "-f", &format!("query={}", gql_query)]).await?;
+        
+        let val: serde_json::Value = serde_json::from_str(&output)
+            .context("Failed to parse GraphQL response for detail")?;
+
+        if let Some(errors) = val.get("errors") {
+            return Err(anyhow::anyhow!("GraphQL error: {}", errors));
+        }
+
+        let node = val.get("data")
+            .and_then(|d| d.get("repository"))
+            .and_then(|r| r.get("pullRequest"))
+            .ok_or_else(|| anyhow::anyhow!("PR not found or unexpected response"))?;
+
+        let mut raw_val = node.clone();
+        
+        // Extract counts
+        let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let review_threads = node.get("reviewThreads").and_then(|r| r.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+        
+        if let Some(obj) = raw_val.as_object_mut() {
+            obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
+            obj.insert("review_comments".to_string(), serde_json::Value::from(review_threads));
+            
+            if let Some(author_obj) = node.get("author").and_then(|a| a.as_object()) {
+                obj.insert("author".to_string(), serde_json::Value::from(author_obj.clone()));
+            }
+
+            if let Some(repo_obj) = node.get("repository").and_then(|r| r.as_object()) {
+                obj.insert("repository".to_string(), serde_json::Value::from(repo_obj.clone()));
+            }
+
+            // Flatten Connections (reviewRequests, latestReviews)
+            for field in &["reviewRequests", "latestReviews"] {
+                if let Some(nodes) = node.get(*field).and_then(|f| f.get("nodes")) {
+                    obj.insert(field.to_string(), nodes.clone());
+                }
+            }
+        }
+
+        let raw: RawPullRequest = serde_json::from_value(raw_val.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to map GraphQL detail node to RawPullRequest: {}. Node: {}", e, raw_val))?;
 
         Ok(raw.into())
     }
@@ -168,10 +349,11 @@ mod tests {
             body: "Body text".to_string(),
             comments_count_search: Some(5),
             comments: None,
+            review_comments: Some(2),
             additions: Some(10),
             deletions: Some(5),
             review_decision: Some("APPROVED".to_string()),
-            status_check_rollup: Some(RawStatusCheckRollup { state: "SUCCESS".to_string() }),
+            status_check_rollup: Some(RawStatusCheckRollup::Summary { state: "SUCCESS".to_string() }),
             head_ref_oid: Some("sha123".to_string()),
             url: "https://github.com/org/repo/pull/123".to_string(),
             review_requests: Some(vec![
@@ -193,10 +375,114 @@ mod tests {
         assert_eq!(pr.status, PRStatus::Open);
         assert_eq!(pr.review_status, ReviewStatus::Approved);
         assert_eq!(pr.ci_status, CIStatus::Passing);
-        assert_eq!(pr.comment_count, 5);
+        assert_eq!(pr.comment_count, 7);
         assert_eq!(pr.additions, 10);
         assert_eq!(pr.deletions, 5);
         assert_eq!(pr.head_ref, "sha123");
         assert_eq!(pr.requested_reviewers, vec!["bob".to_string()]);
+    }
+
+    #[test]
+    fn test_deserialization_with_empty_status_rollup() {
+        let json = r#"{
+            "id": "PR_123",
+            "number": 1,
+            "title": "Test",
+            "author": { "login": "alice" },
+            "state": "OPEN",
+            "createdAt": "2024-05-01T10:00:00Z",
+            "updatedAt": "2024-05-01T10:00:00Z",
+            "body": "Body",
+            "url": "https://github.com/org/repo/pull/1",
+            "statusCheckRollup": []
+        }"#;
+
+        let res: Result<RawPullRequest, _> = serde_json::from_str(json);
+        assert!(res.is_ok(), "Should now succeed because statusCheckRollup can be an array");
+        assert_eq!(res.unwrap().status_check_rollup.unwrap().state(), "EXPECTED");
+    }
+
+    #[test]
+    fn test_repo_fallback_from_url() {
+        let json = r#"{
+            "id": "PR_123",
+            "number": 1,
+            "title": "Test",
+            "author": { "login": "alice" },
+            "state": "OPEN",
+            "createdAt": "2024-05-01T10:00:00Z",
+            "updatedAt": "2024-05-01T10:00:00Z",
+            "body": "Body",
+            "url": "https://github.com/kbjorklid/gh-notify-test/pull/1",
+            "headRepository": { "nameWithOwner": "" }
+        }"#;
+
+        let raw: RawPullRequest = serde_json::from_str(json).unwrap();
+        let pr: PullRequest = raw.into();
+        assert_eq!(pr.repo, "kbjorklid/gh-notify-test");
+    }
+
+    #[test]
+    fn test_parse_gh_search_prs_output() {
+        let json = r#"[
+            {
+                "id": "PR_1",
+                "number": 1,
+                "title": "Fix bug",
+                "author": { "login": "alice" },
+                "repository": { "nameWithOwner": "org/repo" },
+                "state": "OPEN",
+                "createdAt": "2024-05-01T10:00:00Z",
+                "updatedAt": "2024-05-01T11:00:00Z",
+                "body": "Body",
+                "commentsCount": 3,
+                "url": "https://github.com/org/repo/pull/1"
+            }
+        ]"#;
+
+        let raws: Vec<RawPullRequest> = serde_json::from_str(json).expect("Failed to parse sample JSON");
+        assert_eq!(raws.len(), 1);
+        let pr: PullRequest = raws[0].clone().into();
+        assert_eq!(pr.number, 1);
+        assert_eq!(pr.author, "alice");
+        assert_eq!(pr.repo, "org/repo");
+        assert_eq!(pr.comment_count, 3);
+    }
+
+    #[test]
+    fn test_parse_user_provided_json() {
+        let json = r#"[
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQ1NDUzNTk=",
+      "is_bot": false,
+      "login": "kbjorklid",
+      "type": "User",
+      "url": "https://github.com/kbjorklid"
+    },
+    "body": "This is an example PR for testing ghnotify.",
+    "commentsCount": 0,
+    "createdAt": "2026-05-10T10:51:43Z",
+    "id": "PR_kwDOSZQ-mc7Z-0SB",
+    "number": 1,
+    "repository": {
+      "name": "gh-notify-test",
+      "nameWithOwner": "kbjorklid/gh-notify-test"
+    },
+    "state": "open",
+    "title": "Example PR",
+    "updatedAt": "2026-05-10T10:51:43Z",
+    "url": "https://github.com/kbjorklid/gh-notify-test/pull/1"
+  }
+]"#;
+
+        let raws: Vec<RawPullRequest> = serde_json::from_str(json).expect("Failed to parse user provided JSON");
+        assert_eq!(raws.len(), 1);
+        let pr: PullRequest = raws[0].clone().into();
+        assert_eq!(pr.id, "PR_kwDOSZQ-mc7Z-0SB");
+        assert_eq!(pr.number, 1);
+        assert_eq!(pr.author, "kbjorklid");
+        assert_eq!(pr.repo, "kbjorklid/gh-notify-test");
+        assert_eq!(pr.status, crate::domain::pr::PRStatus::Open);
     }
 }

@@ -19,7 +19,7 @@ impl Theme {
             border: Color::Gray,
             title: Color::White,
             text: Color::White,
-            gray: Color::DarkGray,
+            gray: Color::Gray,
             highlight_bg: Color::DarkGray,
             highlight_fg: Color::Yellow,
             success: Color::Green,
@@ -65,5 +65,17 @@ impl Theme {
             "dracula" => Self::dracula(),
             _ => Self::dark(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dark_theme_visibility() {
+        let theme = Theme::dark();
+        // Ensure gray text is visible on highlight background
+        assert_ne!(theme.gray, theme.highlight_bg, "Gray text is invisible on highlight background in dark theme");
     }
 }

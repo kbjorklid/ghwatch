@@ -26,6 +26,7 @@ pub enum AppMode {
     Archive,
     Help,
     Diagnostic,
+    LogDetail,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -47,6 +48,7 @@ where
     pub pr_list: PRList,
     pub archive_list: PRList,
     pub settings_selected_index: usize,
+    pub diagnostic_selected_index: usize,
     pub renderer: Renderer<B>,
     pub event_rx: mpsc::Receiver<AppEvent>,
     pub event_tx: mpsc::Sender<AppEvent>,
@@ -68,6 +70,8 @@ where
     pub notifier: Box<dyn crate::domain::ports::NotificationService>,
     pub last_refresh: Option<std::time::Instant>,
     pub polling_task: Option<tokio::task::JoinHandle<()>>,
+    pub error_message: Option<String>,
+    pub error_time: Option<std::time::Instant>,
 }
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
@@ -117,6 +121,7 @@ where
             pr_list: PRList::new(prs),
             archive_list: PRList::new(archived_prs),
             settings_selected_index: 0,
+            diagnostic_selected_index: 0,
             renderer: Renderer::new(backend)?,
             event_rx: rx,
             event_tx: tx,
@@ -138,6 +143,8 @@ where
             notifier,
             last_refresh: None,
             polling_task: None,
+            error_message: None,
+            error_time: None,
         })
     }
 }
@@ -169,7 +176,7 @@ where
                 self.github.clone(),
                 self.event_tx.clone(),
             );
-            tokio::spawn(polling_worker.start());
+            self.polling_task = Some(tokio::spawn(polling_worker.start()));
         } else {
             let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let state_path = data_dir.join("state.toml");
@@ -178,7 +185,14 @@ where
             }
         }
 
+        // Check gh CLI
+        let gh_check = Command::new("gh").arg("--version").output().await;
+        if gh_check.is_err() {
+            let _ = self.event_tx.send(AppEvent::Error("gh CLI not found in PATH".to_string())).await;
+        }
+
         let input_tx = self.event_tx.clone();
+
         tokio::spawn(async move {
             loop {
                 if event::poll(Duration::from_millis(100)).unwrap() {
@@ -200,6 +214,7 @@ where
                 prs: &draw_prs,
                 selected_index: draw_index,
                 settings_selected_index: self.settings_selected_index,
+                diagnostic_selected_index: self.diagnostic_selected_index,
                 checks: &self.current_checks,
                 timeline: &self.current_timeline,
                 mode: &self.mode,
@@ -208,6 +223,7 @@ where
                 input_buffer: &self.input_buffer,
                 config: &self.config,
                 last_refresh: self.last_refresh,
+                error_message: self.error_message.as_deref(),
             })?;
 
             if let Some(event) = self.event_rx.recv().await {
@@ -221,7 +237,13 @@ where
     async fn handle_app_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Input(e) => crate::input::handle_event(self, e).await,
-            AppEvent::Tick => {},
+            AppEvent::Tick => {
+                if let Some(t) = self.error_time
+                    && t.elapsed() > std::time::Duration::from_secs(10) {
+                        self.error_message = None;
+                        self.error_time = None;
+                    }
+            },
             AppEvent::PrsUpdated { query_name, prs } => {
                 self.merge_prs(prs, query_name == "detail").await;
                 if self.is_writer {
@@ -251,7 +273,8 @@ where
                 self.sort_prs();
             }
             AppEvent::Error(msg) => {
-                eprintln!("Error: {}", msg);
+                self.error_message = Some(msg);
+                self.error_time = Some(std::time::Instant::now());
             }
         }
     }
@@ -288,19 +311,27 @@ where
             let mut current_prs = self.pr_list.items().to_vec();
             for new_pr in new_prs {
                 if let Some(old_pr) = current_prs.iter_mut().find(|p| p.id == new_pr.id) {
-                    self.notifier.notify_pr_update(old_pr, &new_pr);
-                    let last_seen = old_pr.last_seen_at.clone();
-                    *old_pr = new_pr.clone();
-                    old_pr.last_seen_at = last_seen;
+                    let has_changed = old_pr.updated_at != new_pr.updated_at 
+                        || old_pr.ci_status != new_pr.ci_status
+                        || old_pr.review_status != new_pr.review_status
+                        || old_pr.comment_count != new_pr.comment_count;
+
+                    if has_changed {
+                        self.notifier.notify_pr_update(old_pr, &new_pr);
+                        let last_seen = old_pr.last_seen_at.clone();
+                        *old_pr = new_pr.clone();
+                        old_pr.last_seen_at = last_seen;
+                        self.trigger_details_fetch().await;
+                    }
                 } else {
                     self.notifier.notify_new_pr(&new_pr);
                     current_prs.push(new_pr);
+                    self.trigger_details_fetch().await;
                 }
             }
             self.pr_list.set_prs(current_prs);
             self.sort_prs();
             self.check_auto_unfollow();
-            self.trigger_details_fetch().await;
         }
     }
 
@@ -371,6 +402,7 @@ where
     }
 
     pub async fn follow_pr(&mut self, input: &str) {
+        let input = input.trim();
         let (repo, number) = if input.starts_with("http") {
             let parts: Vec<&str> = input.split('/').collect();
             if parts.len() >= 7 {
@@ -379,7 +411,7 @@ where
                 return;
             }
         } else if let Some((repo, num_str)) = input.split_once('#') {
-            (repo.to_string(), num_str.parse::<u32>().ok())
+            (repo.trim().to_string(), num_str.trim().parse::<u32>().ok())
         } else {
             return;
         };
@@ -388,16 +420,20 @@ where
             let github = self.github.clone();
             let tx = self.event_tx.clone();
             tokio::spawn(async move {
-                if let Ok(pr) = github.fetch_pr_details(&repo, number).await {
-                    let _ = tx.send(AppEvent::PrsUpdated { 
-                        query_name: "manual".to_string(), 
-                        prs: vec![pr] 
-                    }).await;
+                match github.fetch_pr_details(&repo, number).await {
+                    Ok(pr) => {
+                        let _ = tx.send(AppEvent::PrsUpdated {
+                            query_name: "manual".to_string(),
+                            prs: vec![pr]
+                        }).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(format!("Failed to fetch PR {}#{}: {}", repo, number, e))).await;
+                    }
                 }
             });
         }
     }
-
     pub async fn trigger_details_fetch(&mut self) {
         if let Some(pr) = self.pr_list.selected_pr() {
             let tx = self.event_tx.clone();
@@ -431,5 +467,132 @@ where
                 }
             });
         }
+    }
+
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        use arboard::Clipboard;
+        match Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(text) {
+                    self.error_message = Some(format!("Failed to copy: {}", e));
+                } else {
+                    self.error_message = Some("Copied to clipboard!".to_string());
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Clipboard error: {}", e));
+            }
+        }
+        self.error_time = Some(std::time::Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus};
+    use crate::domain::ports::{GithubProvider, StateRepository, NotificationService};
+    use async_trait::async_trait;
+    use mockall::mock;
+    use std::sync::Arc;
+
+    mock! {
+        pub GithubProvider {}
+        #[async_trait]
+        impl GithubProvider for GithubProvider {
+            async fn fetch_prs_by_query(&self, query: &str) -> anyhow::Result<Vec<PullRequest>>;
+            async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> anyhow::Result<PullRequest>;
+            async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> anyhow::Result<Vec<CheckRun>>;
+            async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> anyhow::Result<Vec<TimelineEvent>>;
+            async fn fetch_rate_limit(&self) -> anyhow::Result<crate::domain::pr::RateLimitStatus>;
+            async fn fetch_current_user(&self) -> anyhow::Result<String>;
+            async fn open_pr_in_browser(&self, url: &str) -> anyhow::Result<()>;
+        }
+    }
+
+    mock! {
+        pub StateRepository {}
+        impl StateRepository for StateRepository {
+            fn save_state(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
+            fn load_state(&self) -> anyhow::Result<Vec<PullRequest>>;
+            fn save_archive(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
+            fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
+            fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
+        }
+    }
+
+    mock! {
+        pub Notifier {}
+        impl NotificationService for Notifier {
+            fn notify_pr_update(&mut self, old_pr: &PullRequest, new_pr: &PullRequest);
+            fn notify_new_pr(&mut self, pr: &PullRequest);
+            fn clear_cycle(&mut self);
+        }
+    }
+
+    fn create_test_pr(id: &str, ci: CIStatus) -> PullRequest {
+        PullRequest {
+            id: id.to_string(),
+            number: 1,
+            title: "Test".to_string(),
+            author: "alice".to_string(),
+            repo: "org/repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            ci_status: ci,
+            head_ref: "sha".to_string(),
+            body: "".to_string(),
+            url: "".to_string(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_repetitive_notifications_on_multiple_cycles() {
+        let github = Arc::new(MockGithubProvider::new());
+        let mut state_repo = MockStateRepository::new();
+        state_repo.expect_load_state().returning(|| Ok(vec![]));
+        state_repo.expect_load_archive().returning(|| Ok(vec![]));
+        state_repo.expect_save_state().returning(|_| Ok(()));
+        
+        let state_repo = Arc::new(state_repo);
+        let config_dir = std::path::PathBuf::from(".");
+        let data_dir = std::path::PathBuf::from(".");
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        
+        let mut app = App::with_deps(github, state_repo, config_dir, data_dir, backend).unwrap();
+        app.is_writer = true; 
+        
+        let mut notifier = MockNotifier::new();
+        // Cycle 1
+        notifier.expect_notify_pr_update().times(1).returning(|_, _| ());
+        notifier.expect_clear_cycle().times(2).returning(|| ());
+        
+        app.notifier = Box::new(notifier);
+        
+        let pr_initial = create_test_pr("1", CIStatus::Pending);
+        let pr_updated = create_test_pr("1", CIStatus::Passing);
+        
+        // Cycle 1: Update triggers notification
+        app.pr_list.set_prs(vec![pr_initial]);
+        app.handle_app_event(AppEvent::PollCycleStarted).await;
+        app.handle_app_event(AppEvent::PrsUpdated { 
+            query_name: "test".to_string(), 
+            prs: vec![pr_updated.clone()] 
+        }).await;
+        
+        // Cycle 2: Same state SHOULD NOT trigger notification again
+        app.handle_app_event(AppEvent::PollCycleStarted).await;
+        app.handle_app_event(AppEvent::PrsUpdated { 
+            query_name: "test".to_string(), 
+            prs: vec![pr_updated] 
+        }).await;
     }
 }

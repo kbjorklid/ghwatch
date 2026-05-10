@@ -94,6 +94,17 @@ impl StateRepository for FileStateRepository {
         fs::write(&self.archive_path, content)
             .context("Failed to write archive file")?;
         
+        // Clear rotated files to ensure deletion is complete
+        let rotated = vec![
+            self.archive_path.with_file_name("archive.1.toml"),
+            self.archive_path.with_file_name("archive.2.toml"),
+        ];
+        for path in rotated {
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
+        
         Ok(())
     }
 
@@ -217,6 +228,24 @@ mod tests {
         
         let loaded_archive = repo.load_archive().unwrap();
         assert!(loaded_archive.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_save_archive_clears_rotated() {
+        let dir = setup_temp_dir();
+        let repo = FileStateRepository::new(dir.clone());
+        
+        let archive_1 = dir.join("archive.1.toml");
+        fs::write(&archive_1, "prs = []").unwrap();
+        assert!(archive_1.exists());
+        
+        repo.save_archive(&vec![create_test_pr("new")]).unwrap();
+        
+        assert!(!archive_1.exists());
+        let loaded = repo.load_archive().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "new");
         let _ = fs::remove_dir_all(dir);
     }
 }

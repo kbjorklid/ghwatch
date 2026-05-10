@@ -427,3 +427,40 @@ async fn test_detail_fetching_on_navigation() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 }
 
+#[tokio::test]
+async fn test_delete_from_archive() {
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+    
+    let pr1 = create_test_pr("1", 1);
+    
+    state_repo.expect_load_state().returning(|| Ok(vec![]));
+    state_repo.expect_load_archive().returning(move || Ok(vec![pr1.clone()]));
+    state_repo.expect_save_archive().with(eq(vec![])).returning(|_| Ok(()));
+    
+    let temp_dir = std::env::temp_dir().join(format!("ghnotify-test-delete-archive-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    
+    let backend = TestBackend::new(80, 24);
+    let mut app = App::with_deps(
+        Arc::new(github),
+        Arc::new(state_repo),
+        temp_dir.clone(),
+        temp_dir.clone(),
+        backend
+    ).unwrap();
+    
+    // Switch to archive mode
+    let key_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::empty());
+    ghnotify_gemini::input::handle_key(&mut app, key_a).await;
+    assert_eq!(app.mode, AppMode::Archive);
+    assert_eq!(app.archive_list.items().len(), 1);
+    
+    // Press 'd' to delete
+    let key_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty());
+    ghnotify_gemini::input::handle_key(&mut app, key_d).await;
+    
+    assert_eq!(app.archive_list.items().len(), 0);
+}
+

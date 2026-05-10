@@ -14,6 +14,13 @@
 
 All production code must be written using strict **red-green-refactor** TDD. No exceptions.
 
+### Bug Fixes
+
+When a bug is reported or discovered, you MUST:
+1. **Red — Write a failing test.** Create a test case that reproduces the bug. Run the test to confirm it fails.
+2. **Green — Fix the bug.** Implement the fix so the test passes.
+3. **Refactor — Clean up.** Ensure the fix is idiomatic and doesn't introduce regressions.
+
 ### Red-Green-Refactor Cycle
 
 For every unit of behavior, follow this exact sequence:
@@ -32,6 +39,14 @@ For every unit of behavior, follow this exact sequence:
    - Remove duplication, improve naming, reorganize modules.
    - Run `cargo test` after each refactor step. All tests must still pass.
    - Do not change behavior during refactoring.
+
+### Strict TDD Compliance
+
+As a senior engineer agent, you are held to the highest standard of TDD discipline. You MUST:
+1. **Declare the Phase:** Before every code modification (test or production code), explicitly state which TDD phase you are in (**RED**, **GREEN**, or **REFACTOR**) in your reasoning or topic update.
+2. **Never Skip RED:** You are strictly forbidden from writing production code before a failing test exists. If a test passes on the first try, you must explain why (e.g., existing coverage) or refine the test to be more specific.
+3. **Surgical GREEN:** Implement only what is required to pass. "Future-proofing" or "just-in-case" logic is a violation of the **GREEN** phase.
+4. **Verified REFACTOR:** Only refactor when all tests are passing. Run tests after every discrete refactoring step.
 
 ### Test Organization
 
@@ -63,3 +78,9 @@ Use **trait-based mocks only**. The `GithubProvider` trait in `domain/ports.rs` 
 - Use `tokio::test` for async tests.
 - Keep tests independent. No shared mutable state between tests.
 - Test names must be descriptive: `test_<unit>_<scenario>_<expected_result>`.
+
+## Ad-hoc Testing Environment
+
+- **Restricted Repository:** For any manual or ad-hoc testing involving the `gh` CLI or real GitHub API interactions, you MUST ONLY use the repository `kbjorklid/gh-notify-test`.
+- **No Other Repositories:** You are STRICTLY FORBIDDEN from interacting with any other GitHub repository during testing or development activities. This ensures that personal or production data is never touched or modified.
+- **Cleanup:** Always clean up any test data (PRs, issues, comments) created in `kbjorklid/gh-notify-test` after testing is complete.
