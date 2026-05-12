@@ -84,3 +84,8 @@ Use **trait-based mocks only**. The `GithubProvider` trait in `domain/ports.rs` 
 - **Restricted Repository:** For any manual or ad-hoc testing involving the `gh` CLI or real GitHub API interactions, you MUST ONLY use the repository `kbjorklid/gh-notify-test`.
 - **No Other Repositories:** You are STRICTLY FORBIDDEN from interacting with any other GitHub repository during testing or development activities. This ensures that personal or production data is never touched or modified.
 - **Cleanup:** Always clean up any test data (PRs, issues, comments) created in `kbjorklid/gh-notify-test` after testing is complete.
+
+## UI Conventions
+
+- **Delta Highlighting:** Use **Cyan** (usually `theme.info`) and **Bold** to highlight any metric that has changed since the PR was last marked as seen (e.g., `+N` comment deltas). Cyan is the consistent indicator for "changed since last seen".
+

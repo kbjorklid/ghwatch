@@ -18,7 +18,7 @@ static GH_CALL_LOG: Mutex<Option<VecDeque<GhCall>>> = Mutex::new(None);
 
 pub fn init_logging(log_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(log_dir)?;
-    let log_file = log_dir.join("ghnotify.log");
+    let log_file = log_dir.join("ghwatch.log");
     
     let file_appender = std::fs::File::create(log_file)?;
     

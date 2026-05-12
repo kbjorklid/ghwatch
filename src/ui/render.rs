@@ -3,7 +3,8 @@ use anyhow::Result;
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Style, Modifier},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Terminal,
     Frame,
@@ -39,6 +40,11 @@ pub struct DrawContext<'a> {
     pub config: &'a AppConfig,
     pub last_refresh: Option<std::time::Instant>,
     pub error_message: Option<&'a str>,
+    pub query_name_buffer: &'a str,
+    pub query_search_buffer: &'a str,
+    pub query_test_results: Option<&'a [PullRequest]>,
+    pub query_test_error: Option<&'a str>,
+    pub is_testing_query: bool,
 }
 
 impl<B: Backend> Renderer<B> 
@@ -88,6 +94,78 @@ where
                 crate::app::AppMode::LogDetail => {
                     render_diagnostics(f, chunks[0], ctx.diagnostic_selected_index, &theme);
                     render_log_detail(f, f.area(), ctx.diagnostic_selected_index, &theme);
+                }
+                crate::app::AppMode::AddQueryName | crate::app::AppMode::AddQuerySearch => {
+                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                    let title = if ctx.mode == &crate::app::AppMode::AddQueryName { " Enter Query Name " } else { " Enter Search Query " };
+                    let buffer = if ctx.mode == &crate::app::AppMode::AddQueryName { ctx.query_name_buffer } else { ctx.query_search_buffer };
+                    
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.info))
+                        .title(title)
+                        .title_style(Style::default().fg(theme.title));
+                    
+                    let modal_area = centered_rect(60, 20, f.area());
+                    f.render_widget(ratatui::widgets::Clear, modal_area);
+                    
+                    let text = Paragraph::new(buffer)
+                        .block(block)
+                        .style(Style::default().fg(theme.text));
+                    f.render_widget(text, modal_area);
+                }
+                crate::app::AppMode::ConfirmQuery => {
+                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                    
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.info))
+                        .title(" Confirm New Query ")
+                        .title_style(Style::default().fg(theme.title));
+                    
+                    let modal_area = centered_rect(70, 60, f.area());
+                    f.render_widget(ratatui::widgets::Clear, modal_area);
+                    
+                    let mut text = Vec::new();
+                    text.push(Line::from(vec![
+                        Span::styled("Name: ", Style::default().fg(theme.gray)),
+                        Span::styled(ctx.query_name_buffer, Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                    ]));
+                    text.push(Line::from(vec![
+                        Span::styled("Query: ", Style::default().fg(theme.gray)),
+                        Span::styled(ctx.query_search_buffer, Style::default().fg(theme.info)),
+                    ]));
+                    text.push(Line::from(""));
+
+                    if ctx.is_testing_query {
+                        text.push(Line::from(Span::styled(" Testing query... ", Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))));
+                    } else if let Some(err) = ctx.query_test_error {
+                        text.push(Line::from(Span::styled(format!(" Error: {}", err), Style::default().fg(theme.error))));
+                        text.push(Line::from(""));
+                        text.push(Line::from(Span::styled(" Press Esc to go back and edit. ", Style::default().fg(theme.gray))));
+                    } else if let Some(prs) = ctx.query_test_results {
+                        text.push(Line::from(vec![
+                            Span::styled(format!(" Matches: {}", prs.len()), Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+                            if prs.len() >= 5 { Span::styled(" (showing top 5)", Style::default().fg(theme.gray)) } else { Span::raw("") },
+                        ]));
+                        text.push(Line::from(""));
+                        
+                        for pr in prs.iter().take(5) {
+                            text.push(Line::from(vec![
+                                Span::styled(format!(" #{} ", pr.number), Style::default().fg(theme.gray)),
+                                Span::styled(&pr.title, Style::default().fg(theme.text)),
+                            ]));
+                        }
+                        
+                        text.push(Line::from(""));
+                        text.push(Line::from(vec![
+                            Span::styled(" Add this query? ", Style::default().fg(theme.text)),
+                            Span::styled(" (y)es / (n)o ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+                        ]));
+                    }
+                    
+                    let paragraph = Paragraph::new(text).block(block);
+                    f.render_widget(paragraph, modal_area);
                 }
                 _ => {
                     let area = chunks[0];
@@ -217,6 +295,9 @@ mod tests {
             deletions: 5,
             review_status: ReviewStatus::Pending,
             comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
             ci_status: CIStatus::Passing,
             head_ref: "sha123".to_string(),
             body: "Body text".to_string(),
@@ -224,6 +305,9 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }
     }
 
@@ -248,6 +332,11 @@ mod tests {
             config: &config,
             last_refresh: None,
             error_message: None,
+            query_name_buffer: "",
+            query_search_buffer: "",
+            query_test_results: None,
+            query_test_error: None,
+            is_testing_query: false,
         }).unwrap();
     }
 }

@@ -1,8 +1,8 @@
-# Architecture Document: ghnotify
+# Architecture Document: ghwatch
 
 ## 1. Architectural Style
 
-`ghnotify` adopts a **Modular Monolith** architecture heavily influenced by **Clean Architecture** principles. However, rather than strictly separating code into abstract layers (Domain, Use Cases, Interfaces) which can feel non-idiomatic or overly verbose in Rust, we organize the codebase by **feature slices** or **modules**. 
+`ghwatch` adopts a **Modular Monolith** architecture heavily influenced by **Clean Architecture** principles. However, rather than strictly separating code into abstract layers (Domain, Use Cases, Interfaces) which can feel non-idiomatic or overly verbose in Rust, we organize the codebase by **feature slices** or **modules**. 
 
 Within each module, we enforce a strict dependency rule: **Infrastructure depends on Domain, not the other way around.** We use Rust's powerful trait system for dependency inversion where necessary to allow for easier testing and substitution (e.g., mocking the GitHub API).
 
@@ -54,7 +54,7 @@ To maintain Clean Architecture boundaries, we define traits in the core/domain m
 // In `src/domain/ports.rs`
 #[async_trait::async_trait]
 pub trait GithubProvider {
-    async fn fetch_prs_by_query(&self, query: &str) -> Result<Vec<RawPullRequest>>;
+    async fn fetch_prs_by_query(&self, query: &str, limit: Option<u32>) -> Result<Vec<RawPullRequest>>;
     async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<RawPullRequestDetails>;
     async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> Result<Vec<CheckRun>>;
     async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> Result<Vec<TimelineEvent>>;
@@ -146,7 +146,7 @@ pub fn needs_attention(pr: &PullRequest, current_user: &str) -> bool {
 
 ## 7. Configuration
 
-*   Using `serde` and `toml`, we load user settings from `~/.config/ghnotify/config.toml`.
+*   Using `serde` and `toml`, we load user settings from `~/.config/ghwatch/config.toml`.
 *   Configuration dictates:
     *   `queries`: List of query definitions (name, search, interval, enabled) for the round-robin polling.
     *   `unfollow_timeout_mins`: Global timeout for Merged/Closed PRs (default: 60).
@@ -165,7 +165,7 @@ pub fn needs_attention(pr: &PullRequest, current_user: &str) -> bool {
 
 ### 7.2. File Locking (Multi-Instance)
 
-Uses `fs2::FileExt` advisory locks on a lock file (`~/.local/state/ghnotify/.lock`):
+Uses `fs2::FileExt` advisory locks on a lock file (`~/.local/state/ghwatch/.lock`):
 1.  On startup, attempt an exclusive lock. If successful, this instance is the **writer**.
 2.  If the lock is held, take a shared lock and run as a **reader**.
 3.  The writer serializes all state changes. Readers poll the file for updates via the `notify` watcher.

@@ -18,6 +18,8 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, mode: &AppMode, theme: &Them
         AppMode::Diagnostic => "j/k: Navigate | Enter: View Output | y: Copy Cmd | Esc: Back",
         AppMode::LogDetail => "Esc/Enter: Back",
         AppMode::Help => "Esc/q: Back",
+        AppMode::AddQueryName | AppMode::AddQuerySearch => "Enter: Next | Esc: Cancel",
+        AppMode::ConfirmQuery => "y: Accept | n/Esc: Back",
     };
 
 
@@ -27,7 +29,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, mode: &AppMode, theme: &Them
     };
 
     let mut spans = vec![
-        Span::styled(" ghnotify ", Style::default().bg(theme.info).fg(Color::Black).add_modifier(Modifier::BOLD)),
+        Span::styled(" ghwatch ", Style::default().bg(theme.info).fg(Color::Black).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {} ", keys), Style::default().fg(theme.gray)),
     ];
 

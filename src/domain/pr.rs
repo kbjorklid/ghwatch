@@ -15,6 +15,9 @@ pub struct PullRequest {
     pub deletions: u32,
     pub review_status: ReviewStatus,
     pub comment_count: u32,
+    pub unresolved_count: u32,
+    pub total_resolvable_count: u32,
+    pub conversational_count: u32,
     pub ci_status: CIStatus,
     pub head_ref: String,
     pub body: String,
@@ -22,6 +25,9 @@ pub struct PullRequest {
     pub requested_reviewers: Vec<String>,
     pub reviewers: Vec<Reviewer>,
     pub last_seen_at: Option<String>,
+    pub last_seen_unresolved_count: u32,
+    pub last_seen_total_resolvable_count: u32,
+    pub last_seen_conversational_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +101,9 @@ mod tests {
             deletions: 50,
             review_status: ReviewStatus::Pending,
             comment_count: 3,
+            unresolved_count: 1,
+            total_resolvable_count: 2,
+            conversational_count: 1,
             ci_status: CIStatus::Passing,
             head_ref: "sha123".to_string(),
             body: "Detailed description".to_string(),
@@ -102,6 +111,9 @@ mod tests {
             requested_reviewers: vec!["bob".to_string()],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         };
 
         assert_eq!(pr.number, 42);

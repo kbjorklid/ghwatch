@@ -42,11 +42,25 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: DetailProps) {
             Span::styled(&pr.repo, Style::default().fg(props.theme.text)),
         ]));
         
+        let status_color = match pr.status {
+            crate::domain::pr::PRStatus::Open => props.theme.success,
+            crate::domain::pr::PRStatus::Merged => props.theme.info,
+            crate::domain::pr::PRStatus::Closed => props.theme.gray,
+        };
+
+        let review_status_color = match pr.review_status {
+            crate::domain::pr::ReviewStatus::Approved => props.theme.success,
+            crate::domain::pr::ReviewStatus::ChangesRequested => props.theme.error,
+            crate::domain::pr::ReviewStatus::Pending => props.theme.warning,
+        };
+
         detail_text.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(props.theme.gray)),
-            Span::styled(format!("{} ", pr.status), Style::default().fg(props.theme.text)),
+            Span::styled(format!(" {} ", pr.status), Style::default().bg(status_color).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
             Span::styled("Review: ", Style::default().fg(props.theme.gray)),
-            Span::styled(format!("{} ", pr.review_status), Style::default().fg(props.theme.text)),
+            Span::styled(format!(" {} ", pr.review_status), Style::default().bg(review_status_color).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
             Span::styled("CI: ", Style::default().fg(props.theme.gray)),
             Span::styled(format!("{} ", pr.ci_status), Style::default().fg(props.theme.text)),
         ]));

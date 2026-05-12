@@ -156,6 +156,9 @@ mod tests {
             deletions: 1,
             review_status: ReviewStatus::Pending,
             comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
             ci_status: CIStatus::Passing,
             head_ref: "sha".to_string(),
             body: "body".to_string(),
@@ -163,13 +166,16 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }
     }
 
     fn setup_temp_dir() -> PathBuf {
         let mut path = std::env::temp_dir();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("ghnotify-test-{}-{}", std::process::id(), now));
+        path.push(format!("ghwatch-test-{}-{}", std::process::id(), now));
         let _ = fs::create_dir_all(&path);
         path
     }

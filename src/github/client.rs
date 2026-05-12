@@ -52,17 +52,18 @@ impl GhCliClient {
 
 #[async_trait]
 impl GithubProvider for GhCliClient {
-    async fn fetch_prs_by_query(&self, query: &str) -> Result<Vec<PullRequest>> {
-        let gql_query = r#"
-            query($q: String!) {
-                search(query: $q, type: ISSUE, first: 100) {
-                    nodes {
-                        ... on PullRequest {
+    async fn fetch_prs_by_query(&self, query: &str, limit: Option<u32>) -> Result<Vec<PullRequest>> {
+        let gql_limit = limit.unwrap_or(100);
+        let gql_query = format!(r#"
+            query($q: String!) {{
+                search(query: $q, type: ISSUE, first: {}) {{
+                    nodes {{
+                        ... on PullRequest {{
                             id
                             number
                             title
-                            author { login }
-                            repository { nameWithOwner }
+                            author {{ login }}
+                            repository {{ nameWithOwner }}
                             state
                             createdAt
                             updatedAt
@@ -72,31 +73,35 @@ impl GithubProvider for GhCliClient {
                             deletions
                             reviewDecision
                             headRefOid
-                            comments { totalCount }
-                            reviewThreads { totalCount }
-                            statusCheckRollup: statusCheckRollup {
+                            comments {{ totalCount }}
+                            reviewThreads(first: 100) {{
+                                nodes {{
+                                    isResolved
+                                }}
+                            }}
+                            statusCheckRollup: statusCheckRollup {{
                                 state
-                            }
-                            reviewRequests(first: 10) {
-                                nodes {
-                                    requestedReviewer {
+                            }}
+                            reviewRequests(first: 10) {{
+                                nodes {{
+                                    requestedReviewer {{
                                         __typename
-                                        ... on User { login }
-                                        ... on Team { name }
-                                    }
-                                }
-                            }
-                            latestReviews(first: 10) {
-                                nodes {
-                                    author { login }
+                                        ... on User {{ login }}
+                                        ... on Team {{ name }}
+                                    }}
+                                }}
+                            }}
+                            latestReviews(first: 10) {{
+                                nodes {{
+                                    author {{ login }}
                                     state
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        "#.to_string();
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        "#, gql_limit);
 
         let output = self.run_gh(&["api", "graphql", "-f", &format!("q={}", query), "-f", &format!("query={}", gql_query)]).await?;
 
@@ -122,11 +127,18 @@ impl GithubProvider for GhCliClient {
 
             // Extract counts
             let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
-            let review_threads = node.get("reviewThreads").and_then(|r| r.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+            let review_threads_nodes = node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
+            
+            let total_resolvable = review_threads_nodes.map(|n| n.len() as u64).unwrap_or(0);
+            let unresolved = review_threads_nodes.map(|nodes| {
+                nodes.iter().filter(|n| n.get("isResolved").and_then(|v| v.as_bool()) == Some(false)).count() as u64
+            }).unwrap_or(0);
 
             if let Some(obj) = raw_val.as_object_mut() {
                 obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
-                obj.insert("review_comments".to_string(), serde_json::Value::from(review_threads));
+                obj.insert("review_comments".to_string(), serde_json::Value::from(total_resolvable));
+                obj.insert("unresolved_count".to_string(), serde_json::Value::from(unresolved));
+                obj.insert("total_resolvable_count".to_string(), serde_json::Value::from(total_resolvable));
                 
                 // Remove GraphQL specific objects that conflict with RawPullRequest types
                 obj.remove("comments");
@@ -182,7 +194,11 @@ impl GithubProvider for GhCliClient {
                         reviewDecision
                         headRefOid
                         comments {{ totalCount }}
-                        reviewThreads {{ totalCount }}
+                        reviewThreads(first: 100) {{
+                            nodes {{
+                                isResolved
+                            }}
+                        }}
                         statusCheckRollup {{
                             state
                         }}
@@ -223,11 +239,18 @@ impl GithubProvider for GhCliClient {
         
         // Extract counts
         let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let review_threads = node.get("reviewThreads").and_then(|r| r.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let review_threads_nodes = node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
+        
+        let total_resolvable = review_threads_nodes.map(|n| n.len() as u64).unwrap_or(0);
+        let unresolved = review_threads_nodes.map(|nodes| {
+            nodes.iter().filter(|n| n.get("isResolved").and_then(|v| v.as_bool()) == Some(false)).count() as u64
+        }).unwrap_or(0);
         
         if let Some(obj) = raw_val.as_object_mut() {
             obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
-            obj.insert("review_comments".to_string(), serde_json::Value::from(review_threads));
+            obj.insert("review_comments".to_string(), serde_json::Value::from(total_resolvable));
+            obj.insert("unresolved_count".to_string(), serde_json::Value::from(unresolved));
+            obj.insert("total_resolvable_count".to_string(), serde_json::Value::from(total_resolvable));
             
             if let Some(author_obj) = node.get("author").and_then(|a| a.as_object()) {
                 obj.insert("author".to_string(), serde_json::Value::from(author_obj.clone()));
@@ -347,9 +370,10 @@ mod tests {
             created_at: "2024-05-01T10:00:00Z".to_string(),
             updated_at: "2024-05-01T11:00:00Z".to_string(),
             body: "Body text".to_string(),
-            comments_count_search: Some(5),
-            comments: None,
+            comments_count: Some(5),
             review_comments: Some(2),
+            unresolved_count: Some(1),
+            total_resolvable_count: Some(2),
             additions: Some(10),
             deletions: Some(5),
             review_decision: Some("APPROVED".to_string()),
@@ -376,6 +400,9 @@ mod tests {
         assert_eq!(pr.review_status, ReviewStatus::Approved);
         assert_eq!(pr.ci_status, CIStatus::Passing);
         assert_eq!(pr.comment_count, 7);
+        assert_eq!(pr.unresolved_count, 1);
+        assert_eq!(pr.total_resolvable_count, 2);
+        assert_eq!(pr.conversational_count, 5);
         assert_eq!(pr.additions, 10);
         assert_eq!(pr.deletions, 5);
         assert_eq!(pr.head_ref, "sha123");
@@ -460,7 +487,7 @@ mod tests {
       "type": "User",
       "url": "https://github.com/kbjorklid"
     },
-    "body": "This is an example PR for testing ghnotify.",
+    "body": "This is an example PR for testing ghwatch.",
     "commentsCount": 0,
     "createdAt": "2026-05-10T10:51:43Z",
     "id": "PR_kwDOSZQ-mc7Z-0SB",

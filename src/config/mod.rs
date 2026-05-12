@@ -18,7 +18,6 @@ pub enum Column {
     Author,
     Age,
     Diff,
-    Review,
     Comments,
 }
 
@@ -61,7 +60,6 @@ fn default_columns() -> Vec<Column> {
         Column::Author,
         Column::Age,
         Column::Diff,
-        Column::Review,
         Column::Comments,
     ]
 }

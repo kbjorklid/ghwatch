@@ -1,6 +1,6 @@
 # Execution Plan: Phased Implementation
 
-This document describes the phased implementation strategy for ghnotify, designed to fit within LLM context windows by clearing context between each phase.
+This document describes the phased implementation strategy for ghwatch, designed to fit within LLM context windows by clearing context between each phase.
 
 ## Strategy
 

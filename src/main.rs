@@ -1,6 +1,6 @@
-use ghnotify_gemini::app;
-use ghnotify_gemini::storage::get_data_dir;
-use ghnotify_gemini::logging;
+use ghwatch::app;
+use ghwatch::storage::get_data_dir;
+use ghwatch::logging;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

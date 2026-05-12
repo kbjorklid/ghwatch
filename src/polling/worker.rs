@@ -26,6 +26,7 @@ impl PollingWorker {
     pub async fn start(mut self) {
         let mut interval = time::interval(Duration::from_millis(self.config.polling_interval_ms));
         let mut query_index = 0;
+        let mut first_cycle_complete = false;
 
         loop {
             interval.tick().await;
@@ -62,7 +63,7 @@ impl PollingWorker {
             };
 
             if query.enabled && should_poll {
-                match self.github.fetch_prs_by_query(&query.search).await {
+                match self.github.fetch_prs_by_query(&query.search, None).await {
                     Ok(prs) => {
                         self.last_polled[query_index] = Some(now);
                         let _ = self.event_tx.send(AppEvent::PrsUpdated {
@@ -77,6 +78,10 @@ impl PollingWorker {
             }
 
             query_index = (query_index + 1) % self.config.queries.len();
+            if query_index == 0 && !first_cycle_complete {
+                first_cycle_complete = true;
+                let _ = self.event_tx.send(AppEvent::InitialSyncDone).await;
+            }
         }
     }
 }
@@ -103,7 +108,7 @@ mod tests {
         pub GithubProvider {}
         #[async_trait]
         impl GithubProvider for GithubProvider {
-            async fn fetch_prs_by_query(&self, query: &str) -> anyhow::Result<Vec<PullRequest>>;
+            async fn fetch_prs_by_query(&self, query: &str, limit: Option<u32>) -> anyhow::Result<Vec<PullRequest>>;
             async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> anyhow::Result<PullRequest>;
             async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> anyhow::Result<Vec<CheckRun>>;
             async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> anyhow::Result<Vec<TimelineEvent>>;
@@ -139,7 +144,7 @@ mod tests {
             reset_at: 0,
         }));
         
-        github.expect_fetch_prs_by_query().returning(|_| Ok(vec![PullRequest {
+        github.expect_fetch_prs_by_query().returning(|_, _| Ok(vec![PullRequest {
             id: "1".to_string(),
             number: 1,
             title: "Test".to_string(),
@@ -152,6 +157,9 @@ mod tests {
             deletions: 0,
             review_status: ReviewStatus::Pending,
             comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
             ci_status: CIStatus::Passing,
             head_ref: "".to_string(),
             body: "".to_string(),
@@ -159,6 +167,9 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }]));
         
         let worker = PollingWorker::new(config, Arc::new(github), tx);

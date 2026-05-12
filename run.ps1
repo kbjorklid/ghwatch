@@ -1,4 +1,4 @@
-# run.ps1 - Compile and run ghnotify-gemini
+# run.ps1 - Compile and run ghwatch
 
 param(
     [switch]$Release,
@@ -40,7 +40,7 @@ if (-not $SkipBuild) {
         $buildArgs += "--release"
     }
 
-    Write-Host "Building ghnotify-gemini..." -ForegroundColor Cyan
+    Write-Host "Building ghwatch..." -ForegroundColor Cyan
     cargo @buildArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Build failed."
@@ -59,5 +59,5 @@ if ($Release) {
     $runArgs += "--release"
 }
 
-Write-Host "Starting ghnotify-gemini..." -ForegroundColor Cyan
+Write-Host "Starting ghwatch..." -ForegroundColor Cyan
 cargo @runArgs

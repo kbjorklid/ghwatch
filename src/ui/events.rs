@@ -12,4 +12,6 @@ pub enum AppEvent {
     StateReloaded(Vec<PullRequest>),
     Error(String),
     PollCycleStarted,
+    InitialSyncDone,
+    QueryTested(Result<Vec<PullRequest>, String>),
 }

@@ -31,7 +31,7 @@ mod tests {
     fn setup_temp_dir() -> PathBuf {
         let mut path = std::env::temp_dir();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("ghnotify-archive-test-{}-{}", std::process::id(), now));
+        path.push(format!("ghwatch-archive-test-{}-{}", std::process::id(), now));
         let _ = fs::create_dir_all(&path);
         path
     }

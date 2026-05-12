@@ -44,6 +44,9 @@ mod tests {
             deletions: 0,
             review_status: ReviewStatus::Pending,
             comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
             ci_status: CIStatus::Passing,
             head_ref: "".to_string(),
             body: "".to_string(),
@@ -51,6 +54,9 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }
     }
 

@@ -17,9 +17,10 @@ pub struct RawPullRequest {
     pub updated_at: String,
     pub body: String,
     #[serde(rename = "commentsCount")]
-    pub comments_count_search: Option<u32>,
-    pub comments: Option<Vec<RawComment>>,
+    pub comments_count: Option<u32>,
     pub review_comments: Option<u32>,
+    pub unresolved_count: Option<u32>,
+    pub total_resolvable_count: Option<u32>,
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
     #[serde(rename = "reviewDecision")]
@@ -105,7 +106,10 @@ impl From<RawPullRequest> for PullRequest {
                 Some("CHANGES_REQUESTED") => ReviewStatus::ChangesRequested,
                 _ => ReviewStatus::Pending,
             },
-            comment_count: raw.comments_count_search.or(raw.comments.map(|c| c.len() as u32)).unwrap_or(0) + raw.review_comments.unwrap_or(0),
+            comment_count: raw.comments_count.unwrap_or(0) + raw.review_comments.unwrap_or(0),
+            unresolved_count: raw.unresolved_count.unwrap_or(0),
+            total_resolvable_count: raw.total_resolvable_count.unwrap_or(0),
+            conversational_count: raw.comments_count.unwrap_or(0),
             ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state().to_uppercase()) {
                 Some(s) if s == "SUCCESS" => CIStatus::Passing,
                 Some(s) if s == "FAILURE" || s == "ERROR" => CIStatus::Failing,
@@ -118,6 +122,9 @@ impl From<RawPullRequest> for PullRequest {
             requested_reviewers,
             reviewers,
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }
     }
 }

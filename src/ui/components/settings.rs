@@ -15,26 +15,29 @@ pub enum SettingAction {
     CycleTheme,
     ToggleColumn(crate::config::Column),
     ToggleQuery(usize),
+    AddQuery,
 }
 
-pub fn get_setting_action(_config: &AppConfig, index: usize) -> SettingAction {
+pub fn get_setting_action(config: &AppConfig, index: usize) -> SettingAction {
     match index {
         0 | 1 | 5 => SettingAction::None,
         2 => SettingAction::ToggleNerdFonts,
         3 => SettingAction::ToggleStatusBar,
         4 => SettingAction::CycleTheme,
-        idx if (6..11).contains(&idx) => {
+        idx if (6..10).contains(&idx) => {
             let cols = [
                 crate::config::Column::Author,
                 crate::config::Column::Age,
                 crate::config::Column::Diff,
-                crate::config::Column::Review,
                 crate::config::Column::Comments,
             ];
             SettingAction::ToggleColumn(cols[idx - 6].clone())
         }
-        idx if idx >= 11 => {
-            SettingAction::ToggleQuery(idx - 11)
+        idx if idx >= 10 && idx < 10 + config.queries.len() => {
+            SettingAction::ToggleQuery(idx - 10)
+        }
+        idx if idx == 10 + config.queries.len() => {
+            SettingAction::AddQuery
         }
         _ => SettingAction::None,
     }
@@ -72,7 +75,6 @@ pub fn render_settings(f: &mut Frame, area: Rect, config: &AppConfig, selected_i
         (crate::config::Column::Author, "Author"),
         (crate::config::Column::Age, "Age/Staleness"),
         (crate::config::Column::Diff, "Diff Size"),
-        (crate::config::Column::Review, "Review Status"),
         (crate::config::Column::Comments, "Comment Count"),
     ];
 
@@ -90,7 +92,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, config: &AppConfig, selected_i
     text.push(Line::from(Span::styled(" Queries (Space/Enter to toggle):", Style::default().fg(theme.title).add_modifier(Modifier::BOLD))));
 
     for (i, query) in config.queries.iter().enumerate() {
-        let idx = i + 11;
+        let idx = i + 10;
         let style = if idx == selected_idx { Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg) } else { Style::default().fg(theme.text) };
         text.push(Line::from(vec![
             Span::styled(if query.enabled { " [x] " } else { " [ ] " }, style),
@@ -99,6 +101,13 @@ pub fn render_settings(f: &mut Frame, area: Rect, config: &AppConfig, selected_i
             Span::styled(format!(" ({})", query.interval), style.fg(theme.gray)),
         ]));
     }
+
+    // Add Query button
+    let add_query_idx = 10 + config.queries.len();
+    let style = if add_query_idx == selected_idx { Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg) } else { Style::default().fg(theme.text) };
+    text.push(Line::from(vec![
+        Span::styled(" [+] Add New Query...", style.fg(theme.success).add_modifier(Modifier::BOLD)),
+    ]));
 
     text.push(Line::from(""));
     text.push(Line::from(Span::styled(" Tip: Space/Enter to toggle settings. Edit config.toml for full control.", Style::default().fg(theme.warning))));

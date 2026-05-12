@@ -1,8 +1,8 @@
-# Product Requirement Document (PRD): ghnotify
+# Product Requirement Document (PRD): ghwatch
 
 ## 1. Overview
 
-`ghnotify` is a Terminal User Interface (TUI) application built with Rust and Ratatui, designed for monitoring GitHub Pull Requests (PRs). It targets tech leads and developers in team/enterprise settings who need to track 10–50 PRs simultaneously across multiple repositories.
+`ghwatch` is a Terminal User Interface (TUI) application built with Rust and Ratatui, designed for monitoring GitHub Pull Requests (PRs). It targets tech leads and developers in team/enterprise settings who need to track 10–50 PRs simultaneously across multiple repositories.
 
 The core functionality revolves around a dynamically updated, groupable list of watched PRs with instant detail previews, smart "needs attention" detection, and desktop notifications — all driven by the `gh` CLI.
 
@@ -176,9 +176,9 @@ Three TOML files in XDG directories:
 
 | File | Path (Linux) | Purpose |
 |------|-------------|---------|
-| `config.toml` | `~/.config/ghnotify/config.toml` | User preferences, queries, display settings, theme |
-| `state.toml` | `~/.local/state/ghnotify/state.toml` | Active followed PRs, seen status, last-known data |
-| `archive.toml` | `~/.local/state/ghnotify/archive.toml` | Completed PRs history (logrotate-style rotation) |
+| `config.toml` | `~/.config/ghwatch/config.toml` | User preferences, queries, display settings, theme |
+| `state.toml` | `~/.local/state/ghwatch/state.toml` | Active followed PRs, seen status, last-known data |
+| `archive.toml` | `~/.local/state/ghwatch/archive.toml` | Completed PRs history (logrotate-style rotation) |
 
 **Hot Reload:** `config.toml` and `state.toml` are watched for file changes. Modifications apply immediately without restart.
 
@@ -186,7 +186,7 @@ Three TOML files in XDG directories:
 
 ### 6.5. Logging & Debugging
 
-* **File logging:** `tracing` crate writes to `~/.local/state/ghnotify/ghnotify.log` with daily rotation.
+* **File logging:** `tracing` crate writes to `~/.local/state/ghwatch/ghwatch.log` with daily rotation.
 * **In-memory `gh` call log:** Every `gh api` invocation is recorded with timestamp, command, exit code, and duration. Viewable from Settings as a diagnostic screen.
 
 ## 7. Keybindings (MVP — Fixed)
@@ -227,7 +227,7 @@ All changes persist to `config.toml` and hot-reload in any running instance.
 
 ## 9. Installation & Distribution
 
-* **Primary:** `cargo install ghnotify`
+* **Primary:** `cargo install ghwatch`
 * **Prerequisites:** Rust 1.85+, `gh` CLI installed and authenticated.
 
 ## 10. Scope Summary

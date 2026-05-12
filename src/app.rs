@@ -27,6 +27,9 @@ pub enum AppMode {
     Help,
     Diagnostic,
     LogDetail,
+    AddQueryName,
+    AddQuerySearch,
+    ConfirmQuery,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -70,8 +73,14 @@ where
     pub notifier: Box<dyn crate::domain::ports::NotificationService>,
     pub last_refresh: Option<std::time::Instant>,
     pub polling_task: Option<tokio::task::JoinHandle<()>>,
+    pub is_first_sync: bool,
     pub error_message: Option<String>,
     pub error_time: Option<std::time::Instant>,
+    pub query_name_buffer: String,
+    pub query_search_buffer: String,
+    pub query_test_results: Option<Vec<PullRequest>>,
+    pub query_test_error: Option<String>,
+    pub is_testing_query: bool,
 }
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
@@ -143,8 +152,14 @@ where
             notifier,
             last_refresh: None,
             polling_task: None,
+            is_first_sync: true,
             error_message: None,
             error_time: None,
+            query_name_buffer: String::new(),
+            query_search_buffer: String::new(),
+            query_test_results: None,
+            query_test_error: None,
+            is_testing_query: false,
         })
     }
 }
@@ -224,6 +239,11 @@ where
                 config: &self.config,
                 last_refresh: self.last_refresh,
                 error_message: self.error_message.as_deref(),
+                query_name_buffer: &self.query_name_buffer,
+                query_search_buffer: &self.query_search_buffer,
+                query_test_results: self.query_test_results.as_deref(),
+                query_test_error: self.query_test_error.as_deref(),
+                is_testing_query: self.is_testing_query,
             })?;
 
             if let Some(event) = self.event_rx.recv().await {
@@ -265,6 +285,9 @@ where
             AppEvent::PollCycleStarted => {
                 self.notifier.clear_cycle();
             }
+            AppEvent::InitialSyncDone => {
+                self.is_first_sync = false;
+            }
             AppEvent::ConfigReloaded(new_config) => {
                 self.handle_config_reload(new_config);
             }
@@ -276,10 +299,23 @@ where
                 self.error_message = Some(msg);
                 self.error_time = Some(std::time::Instant::now());
             }
+            AppEvent::QueryTested(res) => {
+                self.is_testing_query = false;
+                match res {
+                    Ok(prs) => {
+                        self.query_test_results = Some(prs);
+                        self.query_test_error = None;
+                    }
+                    Err(e) => {
+                        self.query_test_results = None;
+                        self.query_test_error = Some(e);
+                    }
+                }
+            }
         }
     }
 
-    fn handle_config_reload(&mut self, new_config: AppConfig) {
+    pub fn handle_config_reload(&mut self, new_config: AppConfig) {
         self.config = new_config;
         if self.is_writer {
             if let Some(task) = self.polling_task.take() {
@@ -302,10 +338,18 @@ where
         if is_detail {
             if let Some(new_pr) = new_prs.first()
                 && let Some(old_pr) = self.pr_list.items_mut().iter_mut().find(|p| p.id == new_pr.id) {
-                    self.notifier.notify_pr_update(old_pr, new_pr);
+                    if !self.is_first_sync {
+                        self.notifier.notify_pr_update(old_pr, new_pr);
+                    }
                     let last_seen = old_pr.last_seen_at.clone();
+                    let seen_unresolved = old_pr.last_seen_unresolved_count;
+                    let seen_total = old_pr.last_seen_total_resolvable_count;
+                    let seen_conv = old_pr.last_seen_conversational_count;
                     *old_pr = new_pr.clone();
                     old_pr.last_seen_at = last_seen;
+                    old_pr.last_seen_unresolved_count = seen_unresolved;
+                    old_pr.last_seen_total_resolvable_count = seen_total;
+                    old_pr.last_seen_conversational_count = seen_conv;
             }
         } else {
             let mut current_prs = self.pr_list.items().to_vec();
@@ -314,17 +358,29 @@ where
                     let has_changed = old_pr.updated_at != new_pr.updated_at 
                         || old_pr.ci_status != new_pr.ci_status
                         || old_pr.review_status != new_pr.review_status
-                        || old_pr.comment_count != new_pr.comment_count;
+                        || old_pr.comment_count != new_pr.comment_count
+                        || old_pr.total_resolvable_count != new_pr.total_resolvable_count
+                        || old_pr.unresolved_count != new_pr.unresolved_count;
 
                     if has_changed {
-                        self.notifier.notify_pr_update(old_pr, &new_pr);
+                        if !self.is_first_sync {
+                            self.notifier.notify_pr_update(old_pr, &new_pr);
+                        }
                         let last_seen = old_pr.last_seen_at.clone();
+                        let seen_unresolved = old_pr.last_seen_unresolved_count;
+                        let seen_total = old_pr.last_seen_total_resolvable_count;
+                        let seen_conv = old_pr.last_seen_conversational_count;
                         *old_pr = new_pr.clone();
                         old_pr.last_seen_at = last_seen;
+                        old_pr.last_seen_unresolved_count = seen_unresolved;
+                        old_pr.last_seen_total_resolvable_count = seen_total;
+                        old_pr.last_seen_conversational_count = seen_conv;
                         self.trigger_details_fetch().await;
                     }
                 } else {
-                    self.notifier.notify_new_pr(&new_pr);
+                    if !self.is_first_sync {
+                        self.notifier.notify_new_pr(&new_pr);
+                    }
                     current_prs.push(new_pr);
                     self.trigger_details_fetch().await;
                 }
@@ -500,7 +556,7 @@ mod tests {
         pub GithubProvider {}
         #[async_trait]
         impl GithubProvider for GithubProvider {
-            async fn fetch_prs_by_query(&self, query: &str) -> anyhow::Result<Vec<PullRequest>>;
+            async fn fetch_prs_by_query(&self, query: &str, limit: Option<u32>) -> anyhow::Result<Vec<PullRequest>>;
             async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> anyhow::Result<PullRequest>;
             async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> anyhow::Result<Vec<CheckRun>>;
             async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> anyhow::Result<Vec<TimelineEvent>>;
@@ -544,6 +600,9 @@ mod tests {
             deletions: 0,
             review_status: ReviewStatus::Pending,
             comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
             ci_status: ci,
             head_ref: "sha".to_string(),
             body: "".to_string(),
@@ -551,11 +610,14 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
         }
     }
 
     #[tokio::test]
-    async fn test_no_repetitive_notifications_on_multiple_cycles() {
+    async fn test_suppress_notifications_at_startup() {
         let github = Arc::new(MockGithubProvider::new());
         let mut state_repo = MockStateRepository::new();
         state_repo.expect_load_state().returning(|| Ok(vec![]));
@@ -571,28 +633,29 @@ mod tests {
         app.is_writer = true; 
         
         let mut notifier = MockNotifier::new();
-        // Cycle 1
-        notifier.expect_notify_pr_update().times(1).returning(|_, _| ());
-        notifier.expect_clear_cycle().times(2).returning(|| ());
+        // Should NOT be called during first sync
+        notifier.expect_notify_new_pr().times(0);
+        // Should be called AFTER initial sync
+        notifier.expect_notify_new_pr().times(1).returning(|_| ());
         
         app.notifier = Box::new(notifier);
         
-        let pr_initial = create_test_pr("1", CIStatus::Pending);
-        let pr_updated = create_test_pr("1", CIStatus::Passing);
+        let pr = create_test_pr("1", CIStatus::Pending);
         
-        // Cycle 1: Update triggers notification
-        app.pr_list.set_prs(vec![pr_initial]);
-        app.handle_app_event(AppEvent::PollCycleStarted).await;
+        // 1. First sync: Should NOT notify
         app.handle_app_event(AppEvent::PrsUpdated { 
             query_name: "test".to_string(), 
-            prs: vec![pr_updated.clone()] 
+            prs: vec![pr.clone()] 
         }).await;
         
-        // Cycle 2: Same state SHOULD NOT trigger notification again
-        app.handle_app_event(AppEvent::PollCycleStarted).await;
+        // 2. Initial sync done
+        app.handle_app_event(AppEvent::InitialSyncDone).await;
+        
+        // 3. Subsequent update (new PR): SHOULD notify
+        let pr2 = create_test_pr("2", CIStatus::Pending);
         app.handle_app_event(AppEvent::PrsUpdated { 
             query_name: "test".to_string(), 
-            prs: vec![pr_updated] 
+            prs: vec![pr2] 
         }).await;
     }
 }

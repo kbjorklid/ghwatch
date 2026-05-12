@@ -1,6 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::Backend;
 use crate::app::{App, AppMode, SortMode};
+use crate::ui::events::AppEvent;
 use crate::ui::components::settings::{SettingAction, get_setting_action};
 
 pub async fn handle_event<B: Backend>(app: &mut App<B>, event: Event) 
@@ -46,6 +47,9 @@ where B::Error: std::error::Error + Send + Sync + 'static
         AppMode::Diagnostic => handle_diagnostic_key(app, key),
         AppMode::LogDetail => handle_log_detail_key(app, key),
         AppMode::Normal => handle_normal_key(app, key).await,
+        AppMode::AddQueryName => handle_add_query_name_key(app, key).await,
+        AppMode::AddQuerySearch => handle_add_query_search_key(app, key).await,
+        AppMode::ConfirmQuery => handle_confirm_query_key(app, key).await,
     }
 
     if old_index != app.pr_list.selected_index() {
@@ -168,6 +172,14 @@ where B::Error: std::error::Error + Send + Sync + 'static
                         app.config.queries[q_idx].enabled = !app.config.queries[q_idx].enabled;
                     }
                 }
+                SettingAction::AddQuery => {
+                    app.query_name_buffer.clear();
+                    app.query_search_buffer.clear();
+                    app.query_test_results = None;
+                    app.query_test_error = None;
+                    app.is_testing_query = false;
+                    app.mode = AppMode::AddQueryName;
+                }
             }
         }
         KeyCode::Char('D') => {
@@ -180,6 +192,93 @@ where B::Error: std::error::Error + Send + Sync + 'static
             let config_dir = crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let config_path = config_dir.join("config.toml");
             let _ = std::fs::write(config_path, toml::to_string(&app.config).unwrap_or_default());
+        }
+        _ => {}
+    }
+}
+
+async fn handle_add_query_name_key<B: Backend>(app: &mut App<B>, key: KeyEvent) 
+where B::Error: std::error::Error + Send + Sync + 'static 
+{
+    match key.code {
+        KeyCode::Enter => {
+            if !app.query_name_buffer.is_empty() {
+                app.mode = AppMode::AddQuerySearch;
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Settings;
+        }
+        KeyCode::Backspace => {
+            app.query_name_buffer.pop();
+        }
+        KeyCode::Char(c) => {
+            app.query_name_buffer.push(c);
+        }
+        _ => {}
+    }
+}
+
+async fn handle_add_query_search_key<B: Backend>(app: &mut App<B>, key: KeyEvent) 
+where B::Error: std::error::Error + Send + Sync + 'static 
+{
+    match key.code {
+        KeyCode::Enter => {
+            if !app.query_search_buffer.is_empty() {
+                app.is_testing_query = true;
+                app.query_test_results = None;
+                app.query_test_error = None;
+                app.mode = AppMode::ConfirmQuery;
+                
+                let github = app.github.clone();
+                let tx = app.event_tx.clone();
+                let query = app.query_search_buffer.clone();
+                
+                tokio::spawn(async move {
+                    match github.fetch_prs_by_query(&query, Some(5)).await {
+                        Ok(prs) => {
+                            let _ = tx.send(AppEvent::QueryTested(Ok(prs))).await;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::QueryTested(Err(e.to_string()))).await;
+                        }
+                    }
+                });
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::AddQueryName;
+        }
+        KeyCode::Backspace => {
+            app.query_search_buffer.pop();
+        }
+        KeyCode::Char(c) => {
+            app.query_search_buffer.push(c);
+        }
+        _ => {}
+    }
+}
+
+async fn handle_confirm_query_key<B: Backend>(app: &mut App<B>, key: KeyEvent) 
+where B::Error: std::error::Error + Send + Sync + 'static 
+{
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter if !app.is_testing_query && app.query_test_error.is_none() => {
+            // Add the query
+            app.config.queries.push(crate::config::QueryConfig {
+                name: app.query_name_buffer.clone(),
+                search: app.query_search_buffer.clone(),
+                interval: "60s".to_string(),
+                enabled: true,
+            });
+            app.mode = AppMode::Settings;
+            // Trigger a refresh for the new query
+            if app.is_writer {
+                app.handle_config_reload(app.config.clone());
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.mode = AppMode::AddQuerySearch;
         }
         _ => {}
     }
@@ -312,6 +411,9 @@ where B::Error: std::error::Error + Send + Sync + 'static
             let mut prs = app.pr_list.items().to_vec();
             if let Some(pr) = prs.get_mut(app.pr_list.selected_index()) {
                 pr.last_seen_at = Some(pr.updated_at.clone());
+                pr.last_seen_unresolved_count = pr.unresolved_count;
+                pr.last_seen_total_resolvable_count = pr.total_resolvable_count;
+                pr.last_seen_conversational_count = pr.conversational_count;
                 app.pr_list.set_prs(prs);
                 let _ = app.state_repo.save_state(app.pr_list.items());
             }
@@ -320,6 +422,9 @@ where B::Error: std::error::Error + Send + Sync + 'static
             let mut prs = app.pr_list.items().to_vec();
             for pr in &mut prs {
                 pr.last_seen_at = Some(pr.updated_at.clone());
+                pr.last_seen_unresolved_count = pr.unresolved_count;
+                pr.last_seen_total_resolvable_count = pr.total_resolvable_count;
+                pr.last_seen_conversational_count = pr.conversational_count;
             }
             app.pr_list.set_prs(prs);
             let _ = app.state_repo.save_state(app.pr_list.items());
