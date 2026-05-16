@@ -164,6 +164,85 @@ First appearance is when `prev_state.is_none()`. Retroactive firing logic is a b
 - Detail view: list active reasons
 - Config: quiet period, per-rule toggles, open-in-browser-marks-seen
 
+### Phase 4 — Two missing clearing events
+- [ ] Done
+
+Two clearing events from the table above are not yet implemented. Both belong inside `evaluate()` Phase 1 (the clearing block) in `src/domain/attention.rs`.
+
+#### Item A: "Your activity on the PR" clears all
+
+**Spec:** When the current user posts a comment (inline or top-level) on a PR, all active reasons are cleared.
+
+**Current state:** `apply_user_activity()` is defined in `src/domain/attention.rs` (line ~122) and already clears `active_reasons`, but is never called anywhere.
+
+**What to add in `evaluate()` Phase 1** (after the PR-closed check, before CI/ChangesRequested checks):
+```rust
+// User posted a new comment → clear all reasons
+if !is_first {
+    let user_posted_new_comment = timeline.iter().any(|e| {
+        is_comment_event(e) && e.actor == current_user && is_newer_than(e, last_seen)
+    });
+    if user_posted_new_comment {
+        apply_user_activity(&mut state);
+    }
+}
+```
+`is_first` guard is needed because on first appearance there is no concept of "new" activity — old comments by the user should not clear state that was just retroactively set.
+
+**Test (unit, in `src/domain/attention.rs`):**
+- `test_user_activity_clears_all_reasons`: prev_state has `CiFailed + Approved`; timeline has a new `IssueComment` by `current_user` after `last_seen_at`; assert both reasons gone after evaluate().
+- `test_user_activity_not_fired_on_first_appearance`: no prev_state (first appearance); timeline has an old `IssueComment` by `current_user`; own PR with ci_status=Failing; assert `CiFailed` is still set (old comment does not clear retroactive triggers).
+- `test_user_activity_not_fired_for_others_comment`: prev_state has `Mentioned`; timeline has a new comment by a different user; assert `Mentioned` is still set.
+
+#### Item B: "PR converted to draft" clears ReviewRequested and ReReviewRequested
+
+**Spec:** When a PR transitions from non-draft to draft, `ReviewRequested` and `ReReviewRequested` are removed.
+
+**Current state:** `PullRequest` has no `is_draft` field. Not fetched from GitHub. Not detected in `evaluate()`.
+
+**Step 1 — Domain model** (`src/domain/pr.rs`):
+```rust
+// Add to PullRequest struct:
+#[serde(default)]
+pub is_draft: bool,
+```
+`#[serde(default)]` ensures saved `state.toml` files without this field load as `false` (non-draft).
+
+**Step 2 — Raw model** (`src/github/models.rs`):
+```rust
+// Add to RawPullRequest struct:
+#[serde(rename = "isDraft", default)]
+pub is_draft: bool,
+```
+And in `impl From<RawPullRequest> for PullRequest`, add `is_draft: raw.is_draft` to the constructed `Self { ... }`.
+
+**Step 3 — GQL query** (`src/github/client.rs`):
+In `fetch_prs_by_query`, add `isDraft` to the `... on PullRequest { ... }` block (alongside `state`, `createdAt`, etc.). Same addition needed in `fetch_pr_details` if it also constructs `PullRequest` from a GQL query — check the query in that function.
+
+**Step 4 — Clearing in `evaluate()`** (`src/domain/attention.rs`, Phase 1):
+```rust
+// PR converted to draft → remove ReviewRequested, ReReviewRequested
+if new_pr.is_draft && prev_pr.is_some_and(|p| !p.is_draft) {
+    state.remove_reasons(&[TriggerReason::ReviewRequested, TriggerReason::ReReviewRequested]);
+}
+```
+
+**Test (unit, in `src/domain/attention.rs`):**
+- `test_converted_to_draft_clears_review_requested`: prev_pr `is_draft=false`, new_pr `is_draft=true`; prev_state has `ReviewRequested + Mentioned`; assert `ReviewRequested` removed and `Mentioned` still present.
+- `test_converted_to_draft_no_fire_if_already_draft`: prev_pr `is_draft=true`, new_pr `is_draft=true`; prev_state has `ReviewRequested`; assert `ReviewRequested` still present (no spurious clear on stable draft state).
+- `test_non_draft_to_non_draft_no_clear`: prev_pr `is_draft=false`, new_pr `is_draft=false`; prev_state has `ReviewRequested`; assert `ReviewRequested` still present.
+
+**E2e test** (`tests/e2e.rs`): `test_converted_to_draft_clears_review_requested`: seed a PR with `is_draft=false` and `attention_state.active_reasons = {ReviewRequested}`; call `app.merge_prs()` with the same PR but `is_draft=true`; assert `active_reasons` no longer contains `ReviewRequested`.
+
+#### TDD order
+
+1. Write all unit tests (Items A and B) — confirm they fail to compile or fail assertions.
+2. Implement Item A (no new fields needed; only changes `attention.rs`). Run unit tests — Item A tests pass.
+3. Add `is_draft` to `PullRequest`, `RawPullRequest`, `From` impl, and GQL queries. Run `cargo check` — Item B compile errors resolve.
+4. Add clearing logic in `evaluate()`. Run Item B unit tests — pass.
+5. Add and run e2e test for Item B.
+6. Run full `cargo test` and `cargo clippy` — all green.
+
 ## Configuration
 
 - **Quiet period** (default 15 minutes, range 0–120 minutes): applies to both `CommentReply` and `NewComments`. Setting to 0 means fire immediately on the first new comment with no settling delay.
