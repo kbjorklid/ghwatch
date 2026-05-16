@@ -393,6 +393,19 @@ where
         KeyCode::Char('o') => {
             if let Some(pr) = app.pr_list.selected_pr() {
                 let url = pr.url.clone();
+                if app.config.attention.open_in_browser_marks_seen && app.is_writer {
+                    let now = chrono::Utc::now();
+                    let mut prs = app.pr_list.items().to_vec();
+                    if let Some(pr) = prs.get_mut(app.pr_list.selected_index()) {
+                        pr.last_seen_at = Some(pr.updated_at.clone());
+                        pr.last_seen_unresolved_count = pr.unresolved_count;
+                        pr.last_seen_total_resolvable_count = pr.total_resolvable_count;
+                        pr.last_seen_conversational_count = pr.conversational_count;
+                        crate::domain::attention::apply_mark_seen(&mut pr.attention_state, now);
+                        app.pr_list.set_prs(prs);
+                        let _ = app.state_repo.save_state(app.pr_list.items());
+                    }
+                }
                 let github = app.github.clone();
                 tokio::spawn(async move {
                     let _ = github.open_pr_in_browser(&url).await;

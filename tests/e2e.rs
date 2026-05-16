@@ -524,8 +524,8 @@ async fn test_attention_mentioned_fires_on_timeline_loaded() {
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
 
-    let temp_dir = std::env::temp_dir()
-        .join(format!("ghwatch-test-attn-mention-{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-attn-mention-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -545,8 +545,7 @@ async fn test_attention_mentioned_fires_on_timeline_loaded() {
         reviewer_login: None,
     }];
 
-    let event =
-        AppEvent::TimelineLoaded { repo: "org/repo".to_string(), pr_number: 1, events };
+    let event = AppEvent::TimelineLoaded { repo: "org/repo".to_string(), pr_number: 1, events };
     app.handle_app_event(event).await;
 
     let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
@@ -576,8 +575,8 @@ async fn test_attention_mark_seen_clears_active_reasons() {
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
 
-    let temp_dir = std::env::temp_dir()
-        .join(format!("ghwatch-test-attn-markseen-{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-attn-markseen-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -622,8 +621,8 @@ async fn test_attention_archive_clears_active_reasons() {
     state_repo.expect_archive_pr().returning(|_| Ok(()));
     state_repo.expect_save_state().returning(|_| Ok(()));
 
-    let temp_dir = std::env::temp_dir()
-        .join(format!("ghwatch-test-attn-archive-{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-attn-archive-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -670,9 +669,8 @@ async fn test_attention_state_field_exists_and_defaults() {
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     let backend = TestBackend::new(80, 24);
-    let app =
-        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
-            .unwrap();
+    let app = App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+        .unwrap();
 
     let pr = &app.pr_list.items()[0];
     assert!(pr.attention_state.active_reasons.is_empty());
@@ -711,4 +709,100 @@ async fn test_delete_from_archive() {
     ghwatch::input::handle_key(&mut app, key_d).await;
 
     assert_eq!(app.archive_list.items().len(), 0);
+}
+
+#[tokio::test]
+async fn test_open_in_browser_marks_seen_when_configured() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.url = "https://github.com/org/repo/pull/1".to_string();
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+    github.expect_open_pr_in_browser().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-open-marks-seen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.config.attention.open_in_browser_marks_seen = true;
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "PR should have CiFailed before opening"
+    );
+
+    // Press 'o' to open in browser
+    let key_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_o).await;
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.is_empty(),
+        "Attention state should be cleared after open_in_browser with marks_seen config enabled"
+    );
+    assert!(
+        app.pr_list.items()[0].attention_state.last_seen_at.is_some(),
+        "last_seen_at should be set after open_in_browser marks seen"
+    );
+}
+
+#[tokio::test]
+async fn test_open_in_browser_does_not_mark_seen_when_disabled() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.url = "https://github.com/org/repo/pull/1".to_string();
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    github.expect_open_pr_in_browser().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-open-no-marks-seen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    // open_in_browser_marks_seen defaults to false
+    assert!(!app.config.attention.open_in_browser_marks_seen);
+
+    let key_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_o).await;
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "Attention state should NOT be cleared when open_in_browser_marks_seen is false"
+    );
 }

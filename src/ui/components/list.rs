@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::domain::attention::DotColor;
 use crate::domain::pr::PullRequest;
 use crate::domain::pr_list::get_grouped_items;
 use crate::ui::icons::Icons;
@@ -66,8 +67,7 @@ fn render_pr_item(
     icons: &Icons,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let is_unread = crate::domain::lifecycle::is_unread(pr);
-    let needs_attention = crate::domain::rules::needs_attention(pr, &config.current_user);
+    let dot_color = pr.attention_state.dot_color(&pr.updated_at);
 
     let mut style = Style::default().fg(theme.text);
     let bg_style = Style::default();
@@ -75,16 +75,18 @@ fn render_pr_item(
         style = style.fg(theme.highlight_fg);
     }
 
-    if is_unread {
-        style = style.add_modifier(Modifier::BOLD);
+    match &dot_color {
+        Some(DotColor::Red) => style = style.fg(theme.error).add_modifier(Modifier::BOLD),
+        Some(DotColor::Blue) => style = style.add_modifier(Modifier::BOLD),
+        None => {}
     }
 
-    if needs_attention {
-        style = style.fg(theme.error);
-    }
-
-    let unread_marker = if is_unread { "● " } else { "  " };
-    let attention_marker = if needs_attention { "! " } else { "  " };
+    let dot_marker = if dot_color.is_some() { "● " } else { "  " };
+    let dot_style = match &dot_color {
+        Some(DotColor::Red) => bg_style.fg(theme.error).add_modifier(Modifier::BOLD),
+        Some(DotColor::Blue) => bg_style.fg(theme.info),
+        None => bg_style,
+    };
 
     let selection_bar = if is_selected {
         Span::styled("┃", Style::default().fg(Color::Yellow))
@@ -114,10 +116,9 @@ fn render_pr_item(
     let review_status_str = format!(" {} ", pr.review_status);
     let id_str = format!("#{} ", pr.number);
 
-    // area.width - 2 (borders) - 1 (selection bar) - 2 (unread) - 2 (attention) - id_str - status - review - mergeable
+    // area.width - 2 (borders) - 1 (selection bar) - 2 (dot) - id_str - status - review - mergeable
     let used_width = 2
         + 1
-        + 2
         + 2
         + id_str.len()
         + status_str.len()
@@ -138,8 +139,7 @@ fn render_pr_item(
         available_title_width.saturating_sub(display_title.chars().count() as u16) as usize;
     let line1 = Line::from(vec![
         selection_bar.clone(),
-        Span::styled(unread_marker, bg_style.fg(theme.info)),
-        Span::styled(attention_marker, bg_style.fg(theme.error).add_modifier(Modifier::BOLD)),
+        Span::styled(dot_marker, dot_style),
         Span::styled(id_str, bg_style.fg(theme.gray)),
         Span::styled(display_title, bg_style.patch(style)),
         Span::styled(" ".repeat(padding_len), bg_style.patch(style)),
@@ -239,8 +239,10 @@ fn render_pr_item(
 mod tests {
     use super::*;
     use crate::config::{AppConfig, Column};
+    use crate::domain::attention::TriggerReason;
     use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use crate::ui::theme::Theme;
+    use std::collections::HashSet;
 
     #[test]
     fn test_render_pr_item_selected_has_vertical_bar() {
@@ -396,6 +398,159 @@ mod tests {
         assert!(
             !line2_content.contains("Pending"),
             "Line 2 should not contain review status 'Pending'. Content: {line2_content}"
+        );
+    }
+
+    #[test]
+    fn test_render_pr_item_red_dot_shows_error_color() {
+        let mut pr = PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "other".to_string(), // not current_user → old needs_attention stays false
+            repo: "repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "1h".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: Default::default(),
+        };
+        pr.attention_state.active_reasons = HashSet::from([TriggerReason::CiFailed]);
+
+        let config = AppConfig {
+            current_user: "me".to_string(),
+            visible_columns: vec![],
+            ..Default::default()
+        };
+        let theme = Theme::dark();
+        let icons = Icons::new(false);
+
+        let lines = render_pr_item(&pr, false, &config, &theme, &icons, 100);
+
+        assert_eq!(lines[0].spans[1].content, "● ", "Red dot should show ● marker");
+        assert_eq!(
+            lines[0].spans[1].style.fg,
+            Some(theme.error),
+            "Red dot should use error color"
+        );
+    }
+
+    #[test]
+    fn test_render_pr_item_no_dot_when_attention_seen_and_clear() {
+        use chrono::Utc;
+        let mut pr = PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "other".to_string(),
+            repo: "repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None, // old field still None → old code would show ● (is_unread=true)
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: Default::default(),
+        };
+        // attention_state seen after updated_at → no dot
+        pr.attention_state.last_seen_at = Some(
+            chrono::DateTime::parse_from_rfc3339("2024-01-02T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+
+        let config = AppConfig {
+            current_user: "me".to_string(),
+            visible_columns: vec![],
+            ..Default::default()
+        };
+        let theme = Theme::dark();
+        let icons = Icons::new(false);
+
+        let lines = render_pr_item(&pr, false, &config, &theme, &icons, 100);
+
+        assert_eq!(lines[0].spans[1].content, "  ", "No dot when attention_state is clear");
+    }
+
+    #[test]
+    fn test_render_pr_item_no_separate_attention_marker() {
+        let pr = PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "me".to_string(),
+            repo: "repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "1h".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::ChangesRequested, // triggers old needs_attention
+            comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: Default::default(),
+        };
+
+        let config = AppConfig {
+            current_user: "me".to_string(),
+            visible_columns: vec![],
+            ..Default::default()
+        };
+        let theme = Theme::dark();
+        let icons = Icons::new(false);
+
+        let lines = render_pr_item(&pr, false, &config, &theme, &icons, 100);
+
+        let line1_content: String =
+            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !line1_content.contains("! "),
+            "Old '! ' attention marker should not appear in new design. Got: {line1_content}"
         );
     }
 

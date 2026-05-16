@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::domain::attention::DotColor;
 use crate::domain::pr::{CheckRun, MergeableStatus, PullRequest, TimelineEvent};
 use crate::ui::icons::Icons;
 use crate::ui::markdown::render_markdown;
@@ -128,6 +129,26 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             ),
         ]));
 
+        // Attention reasons
+        if pr.attention_state.is_red() {
+            let heading_color = match pr.attention_state.dot_color(&pr.updated_at) {
+                Some(DotColor::Red) => props.theme.error,
+                _ => props.theme.info,
+            };
+            detail_text.push(Line::from(Span::styled(
+                "Attention:",
+                Style::default().fg(heading_color).add_modifier(Modifier::BOLD),
+            )));
+            let mut reasons: Vec<_> = pr.attention_state.active_reasons.iter().collect();
+            reasons.sort_by_key(ToString::to_string);
+            for reason in reasons {
+                detail_text.push(Line::from(vec![
+                    Span::raw("  ● "),
+                    Span::styled(reason.to_string(), Style::default().fg(props.theme.error)),
+                ]));
+            }
+        }
+
         detail_text.push(Line::from(""));
 
         // CI Checks
@@ -220,5 +241,123 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             .title(" Detail ")
             .title_style(Style::default().fg(props.theme.title));
         f.render_widget(block, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::attention::TriggerReason;
+    use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::collections::HashSet;
+
+    fn make_test_pr() -> PullRequest {
+        PullRequest {
+            id: "1".to_string(),
+            number: 42,
+            title: "Test PR".to_string(),
+            author: "author".to_string(),
+            repo: "org/repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "1h".to_string(),
+            additions: 10,
+            deletions: 5,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: Default::default(),
+        }
+    }
+
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn test_detail_shows_active_attention_reasons() {
+        let mut pr = make_test_pr();
+        pr.attention_state.active_reasons =
+            HashSet::from([TriggerReason::CiFailed, TriggerReason::Approved]);
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let config = AppConfig::default();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let props = DetailProps {
+                    prs: &[pr],
+                    selected_index: 0,
+                    checks: &[],
+                    timeline: &[],
+                    config: &config,
+                    theme: &theme,
+                    detail_focused: false,
+                    detail_scroll: 0,
+                };
+                render_detail(f, area, &props);
+            })
+            .unwrap();
+
+        let content = buffer_text(&terminal);
+        assert!(
+            content.contains("CI failed"),
+            "Detail should show 'CI failed' reason. Content: {content}"
+        );
+        assert!(
+            content.contains("Approved"),
+            "Detail should show 'Approved' reason. Content: {content}"
+        );
+    }
+
+    #[test]
+    fn test_detail_shows_no_attention_section_when_clear() {
+        let pr = make_test_pr(); // no active reasons, default state
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let config = AppConfig::default();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let props = DetailProps {
+                    prs: &[pr],
+                    selected_index: 0,
+                    checks: &[],
+                    timeline: &[],
+                    config: &config,
+                    theme: &theme,
+                    detail_focused: false,
+                    detail_scroll: 0,
+                };
+                render_detail(f, area, &props);
+            })
+            .unwrap();
+
+        let content = buffer_text(&terminal);
+        assert!(
+            !content.contains("Attention:"),
+            "Detail should not show Attention section when no reasons active"
+        );
     }
 }

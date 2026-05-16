@@ -158,7 +158,7 @@ First appearance is when `prev_state.is_none()`. Retroactive firing logic is a b
 - E2e tests with mocked provider
 
 ### Phase 3 — UI + config
-- [ ] Done
+- [x] Done
 
 - Replace `●` / `!` with colored dot driven by `AttentionState`
 - Detail view: list active reasons

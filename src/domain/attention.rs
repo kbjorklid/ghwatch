@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,23 @@ pub enum TriggerReason {
     NewComments,
 }
 
+impl fmt::Display for TriggerReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::ReviewRequested => "Review requested",
+            Self::ReReviewRequested => "Re-review requested",
+            Self::Mentioned => "Mentioned in comment",
+            Self::CommentReply => "Comment reply",
+            Self::CiFailed => "CI failed",
+            Self::ChangesRequested => "Changes requested",
+            Self::MergeConflict => "Merge conflict",
+            Self::Approved => "Approved — ready to merge",
+            Self::NewComments => "New comments",
+        };
+        write!(f, "{s}")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DotColor {
     Red,
@@ -30,11 +48,17 @@ pub enum DotColor {
 pub struct AttentionConfig {
     pub quiet_period_mins: u64,
     pub disabled_reasons: HashSet<TriggerReason>,
+    #[serde(default)]
+    pub open_in_browser_marks_seen: bool,
 }
 
 impl Default for AttentionConfig {
     fn default() -> Self {
-        Self { quiet_period_mins: 15, disabled_reasons: HashSet::new() }
+        Self {
+            quiet_period_mins: 15,
+            disabled_reasons: HashSet::new(),
+            open_in_browser_marks_seen: false,
+        }
     }
 }
 
@@ -1198,6 +1222,7 @@ mod tests {
         let config = AttentionConfig {
             quiet_period_mins: 15,
             disabled_reasons: HashSet::from([TriggerReason::CiFailed]),
+            open_in_browser_marks_seen: false,
         };
         let s = evaluate(None, None, &pr, &[], "me", now(), &config);
         assert!(!s.active_reasons.contains(&TriggerReason::CiFailed));
