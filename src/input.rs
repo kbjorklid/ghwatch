@@ -475,7 +475,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::domain::ports::{MockGithubProvider, MockStateRepository};
-    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus};
+    use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use ratatui::backend::TestBackend;
     use std::sync::Arc;
 
@@ -497,6 +497,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "sha123".to_string(),
             body: "Body text".to_string(),
             url: "https://github.com/org/repo/pull/1".to_string(),

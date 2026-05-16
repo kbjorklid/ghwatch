@@ -1,4 +1,4 @@
-use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus, Reviewer};
+use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus, Reviewer};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -25,6 +25,7 @@ pub struct RawPullRequest {
     pub deletions: Option<u32>,
     #[serde(rename = "reviewDecision")]
     pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
     #[serde(rename = "statusCheckRollup")]
     pub status_check_rollup: Option<RawStatusCheckRollup>,
     #[serde(rename = "headRefOid")]
@@ -119,6 +120,11 @@ impl From<RawPullRequest> for PullRequest {
             unresolved_count: raw.unresolved_count.unwrap_or(0),
             total_resolvable_count: raw.total_resolvable_count.unwrap_or(0),
             conversational_count: raw.comments_count.unwrap_or(0),
+            mergeable: match raw.mergeable.as_deref() {
+                Some("MERGEABLE") => MergeableStatus::Mergeable,
+                Some("CONFLICTING") => MergeableStatus::Conflicting,
+                _ => MergeableStatus::Unknown,
+            },
             ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state().to_uppercase()) {
                 Some(s) if s == "SUCCESS" => CIStatus::Passing,
                 Some(s) if s == "FAILURE" || s == "ERROR" => CIStatus::Failing,

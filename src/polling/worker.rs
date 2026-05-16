@@ -112,7 +112,9 @@ fn parse_duration(s: &str) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::config::QueryConfig;
-    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus};
+    use crate::domain::pr::{
+        CIStatus, MergeableStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus,
+    };
     use async_trait::async_trait;
     use mockall::mock;
 
@@ -172,6 +174,7 @@ mod tests {
                 total_resolvable_count: 0,
                 conversational_count: 0,
                 ci_status: CIStatus::Passing,
+                mergeable: MergeableStatus::Unknown,
                 head_ref: String::new(),
                 body: String::new(),
                 url: String::new(),

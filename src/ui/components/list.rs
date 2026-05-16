@@ -104,13 +104,25 @@ fn render_pr_item(
         crate::domain::pr::ReviewStatus::Pending => theme.warning,
     };
 
+    let (mergeable_badge, mergeable_color) = match pr.mergeable {
+        crate::domain::pr::MergeableStatus::Mergeable => (" [M] ", theme.success),
+        crate::domain::pr::MergeableStatus::Conflicting => (" [C] ", theme.error),
+        crate::domain::pr::MergeableStatus::Unknown => (" [?] ", theme.gray),
+    };
+
     let status_str = format!(" {} ", pr.status);
     let review_status_str = format!(" {} ", pr.review_status);
     let id_str = format!("#{} ", pr.number);
 
-    // Calculate available width for title
-    // area.width - 2 (borders) - 1 (selection bar) - 2 (unread) - 2 (attention) - id_str.len() - status_str.len() - review_status_str.len()
-    let used_width = 2 + 1 + 2 + 2 + id_str.len() + status_str.len() + review_status_str.len();
+    // area.width - 2 (borders) - 1 (selection bar) - 2 (unread) - 2 (attention) - id_str - status - review - mergeable
+    let used_width = 2
+        + 1
+        + 2
+        + 2
+        + id_str.len()
+        + status_str.len()
+        + review_status_str.len()
+        + mergeable_badge.len();
     let available_title_width = width.saturating_sub(used_width as u16);
 
     let display_title = if pr.title.chars().count() > available_title_width as usize {
@@ -138,6 +150,10 @@ fn render_pr_item(
         Span::styled(
             review_status_str,
             Style::default().bg(review_status_color).fg(Color::Black).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            mergeable_badge,
+            Style::default().bg(mergeable_color).fg(Color::Black).add_modifier(Modifier::BOLD),
         ),
     ]);
 
@@ -223,7 +239,7 @@ fn render_pr_item(
 mod tests {
     use super::*;
     use crate::config::{AppConfig, Column};
-    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus};
+    use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use crate::ui::theme::Theme;
 
     #[test]
@@ -245,6 +261,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 2,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "main".to_string(),
             body: String::new(),
             url: String::new(),
@@ -307,6 +324,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 2,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "main".to_string(),
             body: String::new(),
             url: String::new(),
@@ -353,6 +371,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 2,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "main".to_string(),
             body: String::new(),
             url: String::new(),
@@ -396,6 +415,7 @@ mod tests {
             total_resolvable_count: 3,
             conversational_count: 1,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "main".to_string(),
             body: String::new(),
             url: String::new(),

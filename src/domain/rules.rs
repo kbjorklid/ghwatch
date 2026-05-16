@@ -18,7 +18,7 @@ pub fn needs_attention(pr: &PullRequest, current_user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::PRStatus;
+    use crate::domain::pr::{MergeableStatus, PRStatus};
 
     fn create_test_pr() -> PullRequest {
         PullRequest {
@@ -38,6 +38,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: String::new(),
             body: String::new(),
             url: String::new(),

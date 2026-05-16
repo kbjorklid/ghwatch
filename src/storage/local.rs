@@ -129,7 +129,7 @@ impl StateRepository for FileStateRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{CIStatus, PRStatus, ReviewStatus};
+    use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, ReviewStatus};
 
     fn create_test_pr(id: &str) -> PullRequest {
         PullRequest {
@@ -149,6 +149,7 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
             head_ref: "sha".to_string(),
             body: "body".to_string(),
             url: String::new(),

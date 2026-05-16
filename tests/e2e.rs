@@ -3,7 +3,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ghwatch::app::{App, AppMode};
 use ghwatch::domain::ports::{GithubProvider, StateRepository};
 use ghwatch::domain::pr::{
-    CIStatus, CheckRun, PRStatus, PullRequest, RateLimitStatus, ReviewStatus, TimelineEvent,
+    CIStatus, CheckRun, MergeableStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus,
+    TimelineEvent,
 };
 use mockall::{mock, predicate::*};
 use ratatui::backend::TestBackend;
@@ -52,6 +53,7 @@ fn create_test_pr(id: &str, number: u32) -> PullRequest {
         total_resolvable_count: 0,
         conversational_count: 0,
         ci_status: CIStatus::Passing,
+        mergeable: MergeableStatus::Unknown,
         head_ref: "sha123".to_string(),
         body: "Body".to_string(),
         url: String::new(),

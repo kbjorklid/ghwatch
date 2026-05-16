@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
+use crate::domain::pr::{CheckRun, MergeableStatus, PullRequest, TimelineEvent};
 use crate::ui::icons::Icons;
 use crate::ui::markdown::render_markdown;
 use crate::ui::theme::Theme;
@@ -64,6 +64,12 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             crate::domain::pr::ReviewStatus::Pending => props.theme.warning,
         };
 
+        let (mergeable_label, mergeable_color) = match pr.mergeable {
+            MergeableStatus::Mergeable => (" Mergeable ", props.theme.success),
+            MergeableStatus::Conflicting => (" Conflicting ", props.theme.error),
+            MergeableStatus::Unknown => (" Unknown ", props.theme.gray),
+        };
+
         detail_text.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(props.theme.gray)),
             Span::styled(
@@ -85,6 +91,15 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             Span::raw(" "),
             Span::styled("CI: ", Style::default().fg(props.theme.gray)),
             Span::styled(format!("{} ", pr.ci_status), Style::default().fg(props.theme.text)),
+            Span::raw(" "),
+            Span::styled("Merge: ", Style::default().fg(props.theme.gray)),
+            Span::styled(
+                mergeable_label,
+                Style::default()
+                    .bg(mergeable_color)
+                    .fg(ratatui::style::Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         detail_text.push(Line::from(vec![

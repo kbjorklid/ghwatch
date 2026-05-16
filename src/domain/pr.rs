@@ -19,6 +19,7 @@ pub struct PullRequest {
     pub total_resolvable_count: u32,
     pub conversational_count: u32,
     pub ci_status: CIStatus,
+    pub mergeable: MergeableStatus,
     pub head_ref: String,
     pub body: String,
     pub url: String,
@@ -75,6 +76,13 @@ pub enum CIStatus {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+pub enum MergeableStatus {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitStatus {
     pub remaining: u32,
@@ -105,6 +113,7 @@ mod tests {
             total_resolvable_count: 2,
             conversational_count: 1,
             ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Mergeable,
             head_ref: "sha123".to_string(),
             body: "Detailed description".to_string(),
             url: "https://github.com/org/repo/pull/42".to_string(),
