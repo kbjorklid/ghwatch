@@ -1,37 +1,39 @@
-use crate::domain::pr::PullRequest;
 use crate::config::{AppConfig, GroupMode};
+use crate::domain::pr::PullRequest;
 
+#[derive(Debug)]
 pub struct PRList {
     prs: Vec<PullRequest>,
     selected_index: usize,
 }
 
+#[derive(Debug)]
 pub struct PrGroup<'a> {
     pub name: String,
     pub prs: Vec<&'a PullRequest>,
 }
 
 impl PRList {
-    pub fn new(prs: Vec<PullRequest>) -> Self {
-        Self {
-            prs,
-            selected_index: 0,
-        }
+    #[must_use]
+    pub const fn new(prs: Vec<PullRequest>) -> Self {
+        Self { prs, selected_index: 0 }
     }
 
+    #[must_use]
     pub fn items(&self) -> &[PullRequest] {
         &self.prs
     }
 
-    pub fn items_mut(&mut self) -> &mut Vec<PullRequest> {
+    pub const fn items_mut(&mut self) -> &mut Vec<PullRequest> {
         &mut self.prs
     }
 
-    pub fn selected_index(&self) -> usize {
+    #[must_use]
+    pub const fn selected_index(&self) -> usize {
         self.selected_index
     }
 
-    pub fn set_selected_index(&mut self, index: usize) {
+    pub const fn set_selected_index(&mut self, index: usize) {
         if index < self.prs.len() {
             self.selected_index = index;
         } else if !self.prs.is_empty() {
@@ -41,18 +43,19 @@ impl PRList {
         }
     }
 
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if !self.prs.is_empty() && self.selected_index < self.prs.len() - 1 {
             self.selected_index += 1;
         }
     }
 
-    pub fn select_prev(&mut self) {
+    pub const fn select_prev(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
         }
     }
-    
+
+    #[must_use]
     pub fn selected_pr(&self) -> Option<&PullRequest> {
         self.prs.get(self.selected_index)
     }
@@ -76,7 +79,7 @@ impl PRList {
     pub fn set_prs(&mut self, prs: Vec<PullRequest>) {
         let old_id = self.selected_pr().map(|p| p.id.clone());
         self.prs = prs;
-        
+
         // Try to maintain selection
         if let Some(id) = old_id {
             if let Some(new_idx) = self.prs.iter().position(|p| p.id == id) {
@@ -89,11 +92,13 @@ impl PRList {
         }
     }
 
+    #[must_use]
     pub fn get_grouped_items<'a>(&'a self, config: &AppConfig) -> Vec<PrGroup<'a>> {
         get_grouped_items(&self.prs, config)
     }
 }
 
+#[must_use]
 pub fn get_grouped_items<'a>(prs: &'a [PullRequest], config: &AppConfig) -> Vec<PrGroup<'a>> {
     if config.group_by == GroupMode::None || prs.is_empty() {
         return vec![PrGroup { name: "All PRs".to_string(), prs: prs.iter().collect() }];
@@ -119,7 +124,7 @@ pub fn get_grouped_items<'a>(prs: &'a [PullRequest], config: &AppConfig) -> Vec<
         };
 
         if current_name.is_empty() {
-            current_name = name.clone();
+            current_name.clone_from(&name);
         }
 
         if name != current_name {
@@ -140,7 +145,7 @@ pub fn get_grouped_items<'a>(prs: &'a [PullRequest], config: &AppConfig) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{PRStatus, ReviewStatus, CIStatus};
+    use crate::domain::pr::{CIStatus, PRStatus, ReviewStatus};
 
     fn create_test_pr(id: &str) -> PullRequest {
         PullRequest {
@@ -150,8 +155,8 @@ mod tests {
             author: "alice".to_string(),
             repo: "repo".to_string(),
             status: PRStatus::Open,
-            created_at: "".to_string(),
-            updated_at: "".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
             additions: 0,
             deletions: 0,
             review_status: ReviewStatus::Pending,
@@ -160,9 +165,9 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
-            head_ref: "".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
@@ -189,7 +194,7 @@ mod tests {
         let mut list = PRList::new(vec![create_test_pr("1"), create_test_pr("2")]);
         list.select_next();
         assert_eq!(list.selected_index(), 1);
-        
+
         list.set_prs(vec![create_test_pr("2"), create_test_pr("1")]);
         assert_eq!(list.selected_index(), 0); // "2" moved to index 0
     }

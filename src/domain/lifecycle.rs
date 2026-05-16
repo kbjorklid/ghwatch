@@ -1,6 +1,7 @@
-use crate::domain::pr::{PullRequest, PRStatus};
-use chrono::{DateTime, Utc, Duration};
+use crate::domain::pr::{PRStatus, PullRequest};
+use chrono::{DateTime, Duration, Utc};
 
+#[must_use]
 pub fn is_unread(pr: &PullRequest) -> bool {
     match &pr.last_seen_at {
         None => true,
@@ -8,6 +9,7 @@ pub fn is_unread(pr: &PullRequest) -> bool {
     }
 }
 
+#[must_use]
 pub fn should_auto_unfollow(pr: &PullRequest, timeout_mins: u64) -> bool {
     if pr.status == PRStatus::Open {
         return false;
@@ -20,15 +22,15 @@ pub fn should_auto_unfollow(pr: &PullRequest, timeout_mins: u64) -> bool {
 
     let now = Utc::now();
     let elapsed = now.signed_duration_since(updated_at);
-    
+
     elapsed >= Duration::minutes(timeout_mins as i64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::ReviewStatus;
     use crate::domain::pr::CIStatus;
+    use crate::domain::pr::ReviewStatus;
 
     fn create_test_pr() -> PullRequest {
         PullRequest {
@@ -48,9 +50,9 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
-            head_ref: "".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
@@ -75,16 +77,16 @@ mod tests {
     #[test]
     fn test_should_auto_unfollow() {
         let mut pr = create_test_pr();
-        
+
         // Open PR never unfollows
         pr.status = PRStatus::Open;
         assert!(!should_auto_unfollow(&pr, 0));
-        
+
         // Terminal PR with 0 timeout unfollows immediately
         pr.status = PRStatus::Merged;
         pr.updated_at = Utc::now().to_rfc3339();
         assert!(should_auto_unfollow(&pr, 0));
-        
+
         // Terminal PR with timeout
         let now = Utc::now();
         pr.updated_at = (now - Duration::minutes(10)).to_rfc3339();

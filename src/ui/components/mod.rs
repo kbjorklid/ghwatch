@@ -1,7 +1,7 @@
-pub mod list;
-pub mod detail;
-pub mod settings;
-pub mod help;
-pub mod diagnostics;
-pub mod status_bar;
 pub mod archive;
+pub mod detail;
+pub mod diagnostics;
+pub mod help;
+pub mod list;
+pub mod settings;
+pub mod status_bar;

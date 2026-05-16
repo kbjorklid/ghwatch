@@ -12,17 +12,16 @@ pub enum NotificationEvent {
 
 use crate::domain::ports::NotificationService;
 
+#[derive(Debug)]
 pub struct NotificationDispatcher {
     pub enabled: bool,
     last_notifications: HashMap<String, HashSet<NotificationEvent>>,
 }
 
 impl NotificationDispatcher {
+    #[must_use]
     pub fn new(enabled: bool) -> Self {
-        Self { 
-            enabled,
-            last_notifications: HashMap::new(),
-        }
+        Self { enabled, last_notifications: HashMap::new() }
     }
 
     pub fn clear_history(&mut self) {
@@ -39,12 +38,8 @@ impl NotificationDispatcher {
         }
     }
 
-    fn send_notification(&self, title: &str, body: &str) {
-        let _ = Notification::new()
-            .summary(title)
-            .body(body)
-            .appname("ghwatch")
-            .show();
+    fn send_notification(title: &str, body: &str) {
+        let _ = Notification::new().summary(title).body(body).appname("ghwatch").show();
     }
 }
 
@@ -61,27 +56,34 @@ impl NotificationService for NotificationDispatcher {
         }
 
         // Check for interesting changes
-        if new_pr.review_status != old_pr.review_status 
-            && self.should_notify(&new_pr.id, NotificationEvent::ReviewUpdate) {
-            self.send_notification(
+        if new_pr.review_status != old_pr.review_status
+            && self.should_notify(&new_pr.id, NotificationEvent::ReviewUpdate)
+        {
+            Self::send_notification(
                 &format!("Review Update: #{}", new_pr.number),
                 &format!("{} is now {}", new_pr.title, new_pr.review_status),
             );
         }
 
-        if new_pr.ci_status != old_pr.ci_status 
-            && self.should_notify(&new_pr.id, NotificationEvent::CiUpdate) {
-            self.send_notification(
+        if new_pr.ci_status != old_pr.ci_status
+            && self.should_notify(&new_pr.id, NotificationEvent::CiUpdate)
+        {
+            Self::send_notification(
                 &format!("CI Update: #{}", new_pr.number),
                 &format!("{} CI is now {}", new_pr.title, new_pr.ci_status),
             );
         }
 
-        if new_pr.comment_count > old_pr.comment_count 
-            && self.should_notify(&new_pr.id, NotificationEvent::CommentUpdate) {
-            self.send_notification(
+        if new_pr.comment_count > old_pr.comment_count
+            && self.should_notify(&new_pr.id, NotificationEvent::CommentUpdate)
+        {
+            Self::send_notification(
                 &format!("New Comment: #{}", new_pr.number),
-                &format!("{} has {} new comments", new_pr.title, new_pr.comment_count - old_pr.comment_count),
+                &format!(
+                    "{} has {} new comments",
+                    new_pr.title,
+                    new_pr.comment_count - old_pr.comment_count
+                ),
             );
         }
     }
@@ -92,7 +94,7 @@ impl NotificationService for NotificationDispatcher {
         }
 
         if self.should_notify(&pr.id, NotificationEvent::NewPr) {
-            self.send_notification(
+            Self::send_notification(
                 &format!("New PR: #{}", pr.number),
                 &format!("{} by {}", pr.title, pr.author),
             );
@@ -103,7 +105,7 @@ impl NotificationService for NotificationDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus};
+    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus};
 
     fn create_test_pr() -> PullRequest {
         PullRequest {
@@ -123,9 +125,9 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
-            head_ref: "".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
@@ -147,12 +149,12 @@ mod tests {
     fn test_notification_deduplication() {
         let mut dispatcher = NotificationDispatcher::new(true);
         let pr = create_test_pr();
-        
+
         // First time should notify
         assert!(dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
         // Second time should NOT notify (persists across cycles)
         assert!(!dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));
-        
+
         // clear_cycle should NOT clear history now
         dispatcher.clear_cycle();
         assert!(!dispatcher.should_notify(&pr.id, NotificationEvent::NewPr));

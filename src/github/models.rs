@@ -1,5 +1,5 @@
+use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus, Reviewer};
 use serde::Deserialize;
-use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus, Reviewer};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RawPullRequest {
@@ -39,7 +39,7 @@ pub struct RawPullRequest {
 impl From<RawPullRequest> for PullRequest {
     fn from(raw: RawPullRequest) -> Self {
         let mut reviewers = Vec::new();
-        
+
         // Add latest reviews
         if let Some(latest) = raw.latest_reviews.as_ref() {
             for review in latest {
@@ -49,32 +49,41 @@ impl From<RawPullRequest> for PullRequest {
                 });
             }
         }
-        
+
         // Add pending review requests
         if let Some(requests) = raw.review_requests.as_ref() {
             for req in requests {
                 if let Some(rr) = req.requested_reviewer.as_ref()
-                    && let Some(login) = rr.login.as_ref() {
+                    && let Some(login) = rr.login.as_ref()
+                {
                     // Only add if not already in reviewers (latest reviews take precedence)
                     if !reviewers.iter().any(|r| &r.login == login) {
-                        reviewers.push(Reviewer {
-                            login: login.clone(),
-                            status: "PENDING".to_string(),
-                        });
+                        reviewers
+                            .push(Reviewer { login: login.clone(), status: "PENDING".to_string() });
                     }
                 }
             }
         }
 
-        let requested_reviewers = raw.review_requests.as_ref().map(|reqs| {
-            reqs.iter()
-                .filter_map(|r| r.requested_reviewer.as_ref())
-                .filter_map(|rr| rr.login.clone())
-                .collect()
-        }).unwrap_or_default();
+        let requested_reviewers = raw
+            .review_requests
+            .as_ref()
+            .map(|reqs| {
+                reqs.iter()
+                    .filter_map(|r| r.requested_reviewer.as_ref())
+                    .filter_map(|rr| rr.login.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let repo = raw.repository.and_then(|r| if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) })
-            .or_else(|| raw.head_repository.and_then(|r| if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) }))
+        let repo = raw
+            .repository
+            .and_then(|r| if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) })
+            .or_else(|| {
+                raw.head_repository.and_then(|r| {
+                    if r.name_with_owner.is_empty() { None } else { Some(r.name_with_owner) }
+                })
+            })
             .unwrap_or_else(|| {
                 // Fallback: parse from URL
                 // https://github.com/owner/repo/pull/1
@@ -86,7 +95,7 @@ impl From<RawPullRequest> for PullRequest {
                 }
             });
 
-        PullRequest {
+        Self {
             id: raw.id,
             number: raw.number,
             title: raw.title,
@@ -172,29 +181,31 @@ pub enum RawStatusCheckRollup {
 }
 
 impl RawStatusCheckRollup {
+    #[must_use]
     pub fn state(&self) -> String {
         match self {
-            RawStatusCheckRollup::Summary { state } => state.clone(),
-            RawStatusCheckRollup::List(list) => {
+            Self::Summary { state } => state.clone(),
+            Self::List(list) => {
                 if list.is_empty() {
                     return "EXPECTED".to_string(); // Map to Skipped
                 }
-                
+
                 let mut has_failure = false;
                 let mut has_pending = false;
-                
+
                 for val in list {
                     if let Some(conclusion) = val.get("conclusion").and_then(|v| v.as_str()) {
                         match conclusion {
-                            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {},
+                            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
                             _ => has_failure = true,
                         }
                     } else if let Some(status) = val.get("status").and_then(|v| v.as_str())
-                        && status != "COMPLETED" {
-                            has_pending = true;
+                        && status != "COMPLETED"
+                    {
+                        has_pending = true;
                     }
                 }
-                
+
                 if has_failure {
                     "FAILURE".to_string()
                 } else if has_pending {

@@ -1,9 +1,9 @@
-use std::sync::Mutex;
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use std::path::Path;
-use anyhow::Result;
+use std::sync::Mutex;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Debug, Clone)]
 pub struct GhCall {
@@ -19,19 +19,20 @@ static GH_CALL_LOG: Mutex<Option<VecDeque<GhCall>>> = Mutex::new(None);
 pub fn init_logging(log_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(log_dir)?;
     let log_file = log_dir.join("ghwatch.log");
-    
+
     let file_appender = std::fs::File::create(log_file)?;
-    
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_writer(file_appender))
         .init();
 
-    let mut log = GH_CALL_LOG.lock().unwrap();
-    *log = Some(VecDeque::with_capacity(100));
+    {
+        let mut log = GH_CALL_LOG.lock().unwrap();
+        *log = Some(VecDeque::with_capacity(100));
+    }
 
     Ok(())
 }
@@ -42,21 +43,13 @@ pub fn record_gh_call(command: String, exit_code: i32, duration_ms: u64, output:
         if deque.len() >= 100 {
             deque.pop_front();
         }
-        deque.push_back(GhCall {
-            timestamp: Utc::now(),
-            command,
-            exit_code,
-            duration_ms,
-            output,
-        });
+        deque.push_back(GhCall { timestamp: Utc::now(), command, exit_code, duration_ms, output });
     }
 }
 
 pub fn get_gh_calls() -> Vec<GhCall> {
     let log = GH_CALL_LOG.lock().unwrap();
-    log.as_ref()
-        .map(|deque| deque.iter().cloned().collect())
-        .unwrap_or_default()
+    log.as_ref().map(|deque| deque.iter().cloned().collect()).unwrap_or_default()
 }
 
 #[cfg(test)]

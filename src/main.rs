@@ -1,6 +1,6 @@
 use ghwatch::app;
-use ghwatch::storage::get_data_dir;
 use ghwatch::logging;
+use ghwatch::storage::get_data_dir;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

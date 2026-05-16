@@ -1,8 +1,9 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
+#[derive(Debug)]
 pub struct FileLock {
     file: File,
 }
@@ -23,10 +24,7 @@ impl FileLock {
     }
 
     pub fn acquire_shared(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .open(path)
-            .context("Failed to open lock file")?;
+        let file = OpenOptions::new().read(true).open(path).context("Failed to open lock file")?;
 
         file.try_lock_shared().context("Failed to acquire shared lock")?;
 

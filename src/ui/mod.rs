@@ -1,8 +1,8 @@
-pub mod render;
-pub mod format;
 pub mod components;
-pub mod search;
+pub mod events;
+pub mod format;
 pub mod icons;
 pub mod markdown;
-pub mod events;
+pub mod render;
+pub mod search;
 pub mod theme;

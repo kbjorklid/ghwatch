@@ -1,12 +1,14 @@
-use crate::domain::pr::{PullRequest, ReviewStatus, CIStatus};
+use crate::domain::pr::{CIStatus, PullRequest, ReviewStatus};
 
+#[must_use]
 pub fn needs_attention(pr: &PullRequest, current_user: &str) -> bool {
     // 1. Changes Requested — someone requested changes on your PR.
-    let changes_requested = pr.author == current_user && pr.review_status == ReviewStatus::ChangesRequested;
-    
+    let changes_requested =
+        pr.author == current_user && pr.review_status == ReviewStatus::ChangesRequested;
+
     // 2. CI Failed — GitHub Actions checks failed on your PR.
     let ci_failed = pr.author == current_user && pr.ci_status == CIStatus::Failing;
-    
+
     // 3. Pending Review — you are requested as a reviewer and haven't responded.
     let pending_review = pr.requested_reviewers.iter().any(|r| r == current_user);
 
@@ -26,8 +28,8 @@ mod tests {
             author: "alice".to_string(),
             repo: "repo".to_string(),
             status: PRStatus::Open,
-            created_at: "".to_string(),
-            updated_at: "".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
             additions: 0,
             deletions: 0,
             review_status: ReviewStatus::Pending,
@@ -36,9 +38,9 @@ mod tests {
             total_resolvable_count: 0,
             conversational_count: 0,
             ci_status: CIStatus::Passing,
-            head_ref: "".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,

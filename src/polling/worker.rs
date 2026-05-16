@@ -1,10 +1,11 @@
+use crate::config::AppConfig;
+use crate::domain::ports::GithubProvider;
+use crate::ui::events::AppEvent;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
-use crate::ui::events::AppEvent;
-use crate::domain::ports::GithubProvider;
-use crate::config::AppConfig;
 
+#[allow(missing_debug_implementations)]
 pub struct PollingWorker {
     config: AppConfig,
     github: Arc<dyn GithubProvider>,
@@ -13,14 +14,13 @@ pub struct PollingWorker {
 }
 
 impl PollingWorker {
-    pub fn new(config: AppConfig, github: Arc<dyn GithubProvider>, event_tx: mpsc::Sender<AppEvent>) -> Self {
+    pub fn new(
+        config: AppConfig,
+        github: Arc<dyn GithubProvider>,
+        event_tx: mpsc::Sender<AppEvent>,
+    ) -> Self {
         let num_queries = config.queries.len();
-        Self {
-            config,
-            github,
-            event_tx,
-            last_polled: vec![None; num_queries],
-        }
+        Self { config, github, event_tx, last_polled: vec![None; num_queries] }
     }
 
     pub async fn start(mut self) {
@@ -37,16 +37,24 @@ impl PollingWorker {
 
             if query_index == 0 {
                 let _ = self.event_tx.send(AppEvent::PollCycleStarted).await;
-                
+
                 // Rate limit check once per cycle
                 if let Ok(rate) = self.github.fetch_rate_limit().await {
                     if rate.remaining < 50 {
-                        let _ = self.event_tx.send(AppEvent::Error("Rate limit critical! Pausing polling...".to_string())).await;
-                        time::sleep(Duration::from_secs(300)).await; // Long wait
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::Error(
+                                "Rate limit critical! Pausing polling...".to_string(),
+                            ))
+                            .await;
+                        time::sleep(Duration::from_mins(5)).await; // Long wait
                         continue;
                     } else if rate.remaining < 100 {
-                        let _ = self.event_tx.send(AppEvent::Error("Rate limit low. Slowing down...".to_string())).await;
-                        time::sleep(Duration::from_secs(60)).await;
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::Error("Rate limit low. Slowing down...".to_string()))
+                            .await;
+                        time::sleep(Duration::from_mins(1)).await;
                     }
                 }
             }
@@ -54,9 +62,10 @@ impl PollingWorker {
             // Round-robin
             let query = &self.config.queries[query_index];
             let now = Instant::now();
-            
+
             let should_poll = if let Some(last) = self.last_polled[query_index] {
-                let interval_dur = parse_duration(&query.interval).unwrap_or(Duration::from_secs(60));
+                let interval_dur =
+                    parse_duration(&query.interval).unwrap_or(Duration::from_mins(1));
                 now.duration_since(last) >= interval_dur
             } else {
                 true
@@ -66,13 +75,16 @@ impl PollingWorker {
                 match self.github.fetch_prs_by_query(&query.search, None).await {
                     Ok(prs) => {
                         self.last_polled[query_index] = Some(now);
-                        let _ = self.event_tx.send(AppEvent::PrsUpdated {
-                            query_name: query.name.clone(),
-                            prs,
-                        }).await;
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::PrsUpdated { query_name: query.name.clone(), prs })
+                            .await;
                     }
                     Err(e) => {
-                        let _ = self.event_tx.send(AppEvent::Error(format!("Polling error ({}): {}", query.name, e))).await;
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::Error(format!("Polling error ({}): {}", query.name, e)))
+                            .await;
                     }
                 }
             }
@@ -99,10 +111,10 @@ fn parse_duration(s: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus, RateLimitStatus};
+    use crate::config::QueryConfig;
+    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus};
     use async_trait::async_trait;
     use mockall::mock;
-    use crate::config::QueryConfig;
 
     mock! {
         pub GithubProvider {}
@@ -117,7 +129,7 @@ mod tests {
             async fn open_pr_in_browser(&self, url: &str) -> anyhow::Result<()>;
         }
     }
-    
+
     // We need to redefine CheckRun and TimelineEvent or import them if they were public and available
     // For the mock to work correctly in this scope.
     use crate::domain::pr::{CheckRun, TimelineEvent};
@@ -126,7 +138,7 @@ mod tests {
     async fn test_polling_worker_cycle() {
         let mut github = MockGithubProvider::new();
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         let config = AppConfig {
             queries: vec![QueryConfig {
                 name: "test".to_string(),
@@ -137,46 +149,46 @@ mod tests {
             polling_interval_ms: 10,
             ..Default::default()
         };
-        
-        github.expect_fetch_rate_limit().returning(|| Ok(RateLimitStatus {
-            limit: 5000,
-            remaining: 4000,
-            reset_at: 0,
-        }));
-        
-        github.expect_fetch_prs_by_query().returning(|_, _| Ok(vec![PullRequest {
-            id: "1".to_string(),
-            number: 1,
-            title: "Test".to_string(),
-            author: "alice".to_string(),
-            repo: "org/repo".to_string(),
-            status: PRStatus::Open,
-            created_at: "now".to_string(),
-            updated_at: "now".to_string(),
-            additions: 0,
-            deletions: 0,
-            review_status: ReviewStatus::Pending,
-            comment_count: 0,
-            unresolved_count: 0,
-            total_resolvable_count: 0,
-            conversational_count: 0,
-            ci_status: CIStatus::Passing,
-            head_ref: "".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
-            requested_reviewers: vec![],
-            reviewers: vec![],
-            last_seen_at: None,
-            last_seen_unresolved_count: 0,
-            last_seen_total_resolvable_count: 0,
-            last_seen_conversational_count: 0,
-        }]));
-        
+
+        github
+            .expect_fetch_rate_limit()
+            .returning(|| Ok(RateLimitStatus { limit: 5000, remaining: 4000, reset_at: 0 }));
+
+        github.expect_fetch_prs_by_query().returning(|_, _| {
+            Ok(vec![PullRequest {
+                id: "1".to_string(),
+                number: 1,
+                title: "Test".to_string(),
+                author: "alice".to_string(),
+                repo: "org/repo".to_string(),
+                status: PRStatus::Open,
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+                additions: 0,
+                deletions: 0,
+                review_status: ReviewStatus::Pending,
+                comment_count: 0,
+                unresolved_count: 0,
+                total_resolvable_count: 0,
+                conversational_count: 0,
+                ci_status: CIStatus::Passing,
+                head_ref: String::new(),
+                body: String::new(),
+                url: String::new(),
+                requested_reviewers: vec![],
+                reviewers: vec![],
+                last_seen_at: None,
+                last_seen_unresolved_count: 0,
+                last_seen_total_resolvable_count: 0,
+                last_seen_conversational_count: 0,
+            }])
+        });
+
         let worker = PollingWorker::new(config, Arc::new(github), tx);
-        
+
         // Run worker in background and wait for events
         let handle = tokio::spawn(worker.start());
-        
+
         let event1 = rx.recv().await.unwrap();
         assert!(matches!(event1, AppEvent::PollCycleStarted));
 
@@ -185,16 +197,16 @@ mod tests {
             assert_eq!(query_name, "test");
             assert_eq!(prs.len(), 1);
         } else {
-            panic!("Unexpected event: {:?}", event2);
+            panic!("Unexpected event: {event2:?}");
         }
-        
+
         handle.abort();
     }
 
     #[test]
     fn test_parse_duration() {
-        assert_eq!(parse_duration("60s"), Some(Duration::from_secs(60)));
-        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("60s"), Some(Duration::from_mins(1)));
+        assert_eq!(parse_duration("5m"), Some(Duration::from_mins(5)));
         assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
         assert_eq!(parse_duration("invalid"), None);
     }

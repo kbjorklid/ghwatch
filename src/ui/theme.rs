@@ -1,5 +1,6 @@
 use ratatui::style::Color;
 
+#[derive(Debug)]
 pub struct Theme {
     pub border: Color,
     pub title: Color,
@@ -14,7 +15,8 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn dark() -> Self {
+    #[must_use]
+    pub const fn dark() -> Self {
         Self {
             border: Color::Gray,
             title: Color::White,
@@ -29,7 +31,8 @@ impl Theme {
         }
     }
 
-    pub fn nord() -> Self {
+    #[must_use]
+    pub const fn nord() -> Self {
         Self {
             border: Color::Rgb(76, 86, 106),
             title: Color::Rgb(236, 239, 244),
@@ -44,7 +47,8 @@ impl Theme {
         }
     }
 
-    pub fn dracula() -> Self {
+    #[must_use]
+    pub const fn dracula() -> Self {
         Self {
             border: Color::Rgb(98, 114, 164),
             title: Color::Rgb(248, 248, 242),
@@ -59,6 +63,7 @@ impl Theme {
         }
     }
 
+    #[must_use]
     pub fn from_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
             "nord" => Self::nord(),
@@ -76,6 +81,33 @@ mod tests {
     fn test_dark_theme_visibility() {
         let theme = Theme::dark();
         // Ensure gray text is visible on highlight background
-        assert_ne!(theme.gray, theme.highlight_bg, "Gray text is invisible on highlight background in dark theme");
+        assert_ne!(
+            theme.gray, theme.highlight_bg,
+            "Gray text is invisible on highlight background in dark theme"
+        );
+    }
+
+    #[test]
+    fn test_nord_theme() {
+        let theme = Theme::nord();
+        assert_eq!(theme.info, Color::Rgb(129, 161, 193));
+    }
+
+    #[test]
+    fn test_dracula_theme() {
+        let theme = Theme::dracula();
+        assert_eq!(theme.info, Color::Rgb(139, 233, 253));
+    }
+
+    #[test]
+    fn test_from_name() {
+        let nord = Theme::from_name("nord");
+        assert_eq!(nord.info, Color::Rgb(129, 161, 193));
+
+        let dracula = Theme::from_name("DRACULA");
+        assert_eq!(dracula.info, Color::Rgb(139, 233, 253));
+
+        let default = Theme::from_name("unknown");
+        assert_eq!(default.info, Color::Cyan);
     }
 }

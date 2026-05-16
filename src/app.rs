@@ -1,19 +1,19 @@
-use crate::domain::pr::{PullRequest, CheckRun, TimelineEvent};
+use crate::config::AppConfig;
 use crate::domain::ports::{GithubProvider, StateRepository};
+use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
 use crate::github::client::GhCliClient;
+use crate::polling::worker::PollingWorker;
+use crate::storage::get_data_dir;
+use crate::storage::local::FileStateRepository;
 use crate::ui::events::AppEvent;
 use crate::ui::render::Renderer;
-use crate::config::AppConfig;
-use crate::polling::worker::PollingWorker;
 use anyhow::Result;
-use tokio::sync::mpsc;
-use std::time::Duration;
-use std::sync::Arc;
-use crate::storage::local::FileStateRepository;
-use crate::storage::get_data_dir;
-use tokio::process::Command;
 use crossterm::event;
 use ratatui::backend::Backend;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::sync::mpsc;
 
 use crate::storage::lock::FileLock;
 
@@ -44,9 +44,10 @@ use crate::notify::dispatcher::NotificationDispatcher;
 
 use crate::domain::pr_list::PRList;
 
-pub struct App<B: Backend> 
-where 
-    B::Error: std::error::Error + Send + Sync + 'static
+#[allow(clippy::struct_excessive_bools, missing_debug_implementations)]
+pub struct App<B: Backend>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     pub pr_list: PRList,
     pub archive_list: PRList,
@@ -62,7 +63,7 @@ where
     pub current_timeline: Vec<TimelineEvent>,
     pub config: AppConfig,
     pub is_writer: bool,
-    pub _lock: Option<FileLock>,
+    _lock: Option<FileLock>,
     pub mode: AppMode,
     pub sort_mode: SortMode,
     pub detail_focused: bool,
@@ -85,41 +86,42 @@ where
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
     pub fn new() -> Result<Self> {
-        let config_dir = crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let config_dir =
+            crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        
+
         let github = Arc::new(GhCliClient::new());
-        let state_repo = Arc::new(FileStateRepository::new(data_dir.clone()));
-        
+        let state_repo = Arc::new(FileStateRepository::new(&data_dir));
+
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
-        Self::with_deps(github, state_repo, config_dir, data_dir, backend)
+        Self::with_deps(github, state_repo, &config_dir, &data_dir, backend)
     }
 }
 
-impl<B: Backend> App<B> 
-where 
-    B::Error: std::error::Error + Send + Sync + 'static
+impl<B: Backend> App<B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     pub fn with_deps(
         github: Arc<dyn GithubProvider>,
         state_repo: Arc<dyn StateRepository>,
-        config_dir: std::path::PathBuf,
-        data_dir: std::path::PathBuf,
+        config_dir: &std::path::Path,
+        data_dir: &std::path::Path,
         backend: B,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
         let config_path = config_dir.join("config.toml");
         let config = AppConfig::load(&config_path).unwrap_or_default();
-        
-        let _ = std::fs::create_dir_all(&data_dir);
+
+        let _ = std::fs::create_dir_all(data_dir);
         let lock_path = data_dir.join(".lock");
-        
+
         let (is_writer, lock) = match FileLock::acquire_exclusive(&lock_path) {
             Ok(lock) => (true, Some(lock)),
             Err(_) => match FileLock::acquire_shared(&lock_path) {
                 Ok(lock) => (false, Some(lock)),
                 Err(_) => (false, None),
-            }
+            },
         };
 
         let prs = state_repo.load_state().unwrap_or_default();
@@ -164,46 +166,47 @@ where
     }
 }
 
-impl<B: Backend> App<B> 
-where 
-    B::Error: std::error::Error + Send + Sync + 'static
+impl<B: Backend> App<B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     pub async fn run(&mut self, _init_renderer: bool) -> Result<()> {
-        let config_dir = crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let config_dir =
+            crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let config_path = config_dir.join("config.toml");
         if config_path.exists() {
-            self.config_watcher = crate::config::watcher::ConfigWatcher::new(&config_path, self.event_tx.clone()).ok();
+            self.config_watcher =
+                crate::config::watcher::ConfigWatcher::new(&config_path, self.event_tx.clone())
+                    .ok();
         }
 
         if self.config.current_user.is_empty() {
-            let output = Command::new("gh")
-                .args(["api", "user", "--jq", ".login"])
-                .output()
-                .await;
+            let output = Command::new("gh").args(["api", "user", "--jq", ".login"]).output().await;
             if let Ok(output) = output {
-                self.config.current_user = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                self.config.current_user =
+                    String::from_utf8_lossy(&output.stdout).trim().to_string();
             }
         }
 
         if self.is_writer {
-            let polling_worker = PollingWorker::new(
-                self.config.clone(),
-                self.github.clone(),
-                self.event_tx.clone(),
-            );
+            let polling_worker =
+                PollingWorker::new(self.config.clone(), self.github.clone(), self.event_tx.clone());
             self.polling_task = Some(tokio::spawn(polling_worker.start()));
         } else {
             let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let state_path = data_dir.join("state.toml");
             if state_path.exists() {
-                self.state_watcher = crate::config::watcher::StateWatcher::new(&state_path, self.event_tx.clone()).ok();
+                self.state_watcher =
+                    crate::config::watcher::StateWatcher::new(&state_path, self.event_tx.clone())
+                        .ok();
             }
         }
 
         // Check gh CLI
         let gh_check = Command::new("gh").arg("--version").output().await;
         if gh_check.is_err() {
-            let _ = self.event_tx.send(AppEvent::Error("gh CLI not found in PATH".to_string())).await;
+            let _ =
+                self.event_tx.send(AppEvent::Error("gh CLI not found in PATH".to_string())).await;
         }
 
         let input_tx = self.event_tx.clone();
@@ -220,12 +223,17 @@ where
 
         while !self.should_quit {
             let (draw_prs, draw_index) = match self.mode {
-                AppMode::Search => (crate::ui::search::filter_prs(self.pr_list.items(), &self.input_buffer), self.pr_list.selected_index()),
-                AppMode::Archive => (self.archive_list.items().to_vec(), self.archive_list.selected_index()),
+                AppMode::Search => (
+                    crate::ui::search::filter_prs(self.pr_list.items(), &self.input_buffer),
+                    self.pr_list.selected_index(),
+                ),
+                AppMode::Archive => {
+                    (self.archive_list.items().to_vec(), self.archive_list.selected_index())
+                }
                 _ => (self.pr_list.items().to_vec(), self.pr_list.selected_index()),
             };
 
-            self.renderer.draw(crate::ui::render::DrawContext {
+            self.renderer.draw(&crate::ui::render::DrawContext {
                 prs: &draw_prs,
                 selected_index: draw_index,
                 settings_selected_index: self.settings_selected_index,
@@ -259,11 +267,12 @@ where
             AppEvent::Input(e) => crate::input::handle_event(self, e).await,
             AppEvent::Tick => {
                 if let Some(t) = self.error_time
-                    && t.elapsed() > std::time::Duration::from_secs(10) {
-                        self.error_message = None;
-                        self.error_time = None;
-                    }
-            },
+                    && t.elapsed() > std::time::Duration::from_secs(10)
+                {
+                    self.error_message = None;
+                    self.error_time = None;
+                }
+            }
             AppEvent::PrsUpdated { query_name, prs } => {
                 self.merge_prs(prs, query_name == "detail").await;
                 if self.is_writer {
@@ -272,15 +281,19 @@ where
             }
             AppEvent::CiStatusLoaded { repo, pr_number, checks } => {
                 if let Some(selected) = self.pr_list.selected_pr()
-                    && selected.repo == repo && selected.number == pr_number {
-                        self.current_checks = checks;
-                    }
+                    && selected.repo == repo
+                    && selected.number == pr_number
+                {
+                    self.current_checks = checks;
+                }
             }
             AppEvent::TimelineLoaded { repo, pr_number, events } => {
                 if let Some(selected) = self.pr_list.selected_pr()
-                    && selected.repo == repo && selected.number == pr_number {
-                        self.current_timeline = events;
-                    }
+                    && selected.repo == repo
+                    && selected.number == pr_number
+                {
+                    self.current_timeline = events;
+                }
             }
             AppEvent::PollCycleStarted => {
                 self.notifier.clear_cycle();
@@ -321,11 +334,8 @@ where
             if let Some(task) = self.polling_task.take() {
                 task.abort();
             }
-            let polling_worker = PollingWorker::new(
-                self.config.clone(),
-                self.github.clone(),
-                self.event_tx.clone(),
-            );
+            let polling_worker =
+                PollingWorker::new(self.config.clone(), self.github.clone(), self.event_tx.clone());
             self.polling_task = Some(tokio::spawn(polling_worker.start()));
         }
     }
@@ -334,28 +344,30 @@ where
         if !is_detail {
             self.last_refresh = Some(std::time::Instant::now());
         }
-        
+
         if is_detail {
             if let Some(new_pr) = new_prs.first()
-                && let Some(old_pr) = self.pr_list.items_mut().iter_mut().find(|p| p.id == new_pr.id) {
-                    if !self.is_first_sync {
-                        self.notifier.notify_pr_update(old_pr, new_pr);
-                    }
-                    let last_seen = old_pr.last_seen_at.clone();
-                    let seen_unresolved = old_pr.last_seen_unresolved_count;
-                    let seen_total = old_pr.last_seen_total_resolvable_count;
-                    let seen_conv = old_pr.last_seen_conversational_count;
-                    *old_pr = new_pr.clone();
-                    old_pr.last_seen_at = last_seen;
-                    old_pr.last_seen_unresolved_count = seen_unresolved;
-                    old_pr.last_seen_total_resolvable_count = seen_total;
-                    old_pr.last_seen_conversational_count = seen_conv;
+                && let Some(old_pr) =
+                    self.pr_list.items_mut().iter_mut().find(|p| p.id == new_pr.id)
+            {
+                if !self.is_first_sync {
+                    self.notifier.notify_pr_update(old_pr, new_pr);
+                }
+                let last_seen = old_pr.last_seen_at.clone();
+                let seen_unresolved = old_pr.last_seen_unresolved_count;
+                let seen_total = old_pr.last_seen_total_resolvable_count;
+                let seen_conv = old_pr.last_seen_conversational_count;
+                *old_pr = new_pr.clone();
+                old_pr.last_seen_at = last_seen;
+                old_pr.last_seen_unresolved_count = seen_unresolved;
+                old_pr.last_seen_total_resolvable_count = seen_total;
+                old_pr.last_seen_conversational_count = seen_conv;
             }
         } else {
             let mut current_prs = self.pr_list.items().to_vec();
             for new_pr in new_prs {
                 if let Some(old_pr) = current_prs.iter_mut().find(|p| p.id == new_pr.id) {
-                    let has_changed = old_pr.updated_at != new_pr.updated_at 
+                    let has_changed = old_pr.updated_at != new_pr.updated_at
                         || old_pr.ci_status != new_pr.ci_status
                         || old_pr.review_status != new_pr.review_status
                         || old_pr.comment_count != new_pr.comment_count
@@ -392,17 +404,19 @@ where
     }
 
     pub fn check_auto_unfollow(&mut self) {
-        if !self.is_writer { return; }
-        
+        if !self.is_writer {
+            return;
+        }
+
         let timeout = self.config.unfollow_timeout_mins;
         let mut to_remove = Vec::new();
-        
+
         for (i, pr) in self.pr_list.items().iter().enumerate() {
             if crate::domain::lifecycle::should_auto_unfollow(pr, timeout) {
                 to_remove.push(i);
             }
         }
-        
+
         // Remove from highest index to lowest to avoid index shifts
         let mut current_prs = self.pr_list.items().to_vec();
         for &i in to_remove.iter().rev() {
@@ -410,7 +424,7 @@ where
             self.archive_list.insert_at_front(pr.clone());
             let _ = self.state_repo.archive_pr(pr);
         }
-        
+
         if !to_remove.is_empty() {
             self.pr_list.set_prs(current_prs);
             let _ = self.state_repo.save_state(self.pr_list.items());
@@ -478,13 +492,19 @@ where
             tokio::spawn(async move {
                 match github.fetch_pr_details(&repo, number).await {
                     Ok(pr) => {
-                        let _ = tx.send(AppEvent::PrsUpdated {
-                            query_name: "manual".to_string(),
-                            prs: vec![pr]
-                        }).await;
+                        let _ = tx
+                            .send(AppEvent::PrsUpdated {
+                                query_name: "manual".to_string(),
+                                prs: vec![pr],
+                            })
+                            .await;
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::Error(format!("Failed to fetch PR {}#{}: {}", repo, number, e))).await;
+                        let _ = tx
+                            .send(AppEvent::Error(format!(
+                                "Failed to fetch PR {repo}#{number}: {e}"
+                            )))
+                            .await;
                     }
                 }
             });
@@ -496,30 +516,37 @@ where
             let github = self.github.clone();
             let repo = pr.repo.clone();
             let number = pr.number;
-            
+
             tokio::spawn(async move {
                 if let Ok(full_pr) = github.fetch_pr_details(&repo, number).await {
-                    let _ = tx.send(AppEvent::PrsUpdated { 
-                        query_name: "detail".to_string(), 
-                        prs: vec![full_pr.clone()] 
-                    }).await;
+                    let _ = tx
+                        .send(AppEvent::PrsUpdated {
+                            query_name: "detail".to_string(),
+                            prs: vec![full_pr.clone()],
+                        })
+                        .await;
 
-                    if !full_pr.head_ref.is_empty() 
-                        && let Ok(checks) = github.fetch_check_runs(&repo, &full_pr.head_ref).await {
-                            let _ = tx.send(AppEvent::CiStatusLoaded { 
-                                repo: repo.clone(), 
-                                pr_number: number, 
-                                checks 
-                            }).await;
-                        }
+                    if !full_pr.head_ref.is_empty()
+                        && let Ok(checks) = github.fetch_check_runs(&repo, &full_pr.head_ref).await
+                    {
+                        let _ = tx
+                            .send(AppEvent::CiStatusLoaded {
+                                repo: repo.clone(),
+                                pr_number: number,
+                                checks,
+                            })
+                            .await;
+                    }
                 }
 
                 if let Ok(timeline) = github.fetch_timeline(&repo, number).await {
-                    let _ = tx.send(AppEvent::TimelineLoaded { 
-                        repo: repo.clone(), 
-                        pr_number: number, 
-                        events: timeline 
-                    }).await;
+                    let _ = tx
+                        .send(AppEvent::TimelineLoaded {
+                            repo: repo.clone(),
+                            pr_number: number,
+                            events: timeline,
+                        })
+                        .await;
                 }
             });
         }
@@ -530,13 +557,13 @@ where
         match Clipboard::new() {
             Ok(mut clipboard) => {
                 if let Err(e) = clipboard.set_text(text) {
-                    self.error_message = Some(format!("Failed to copy: {}", e));
+                    self.error_message = Some(format!("Failed to copy: {e}"));
                 } else {
                     self.error_message = Some("Copied to clipboard!".to_string());
                 }
             }
             Err(e) => {
-                self.error_message = Some(format!("Clipboard error: {}", e));
+                self.error_message = Some(format!("Clipboard error: {e}"));
             }
         }
         self.error_time = Some(std::time::Instant::now());
@@ -546,8 +573,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus};
-    use crate::domain::ports::{GithubProvider, StateRepository, NotificationService};
+    use crate::domain::ports::{GithubProvider, NotificationService, StateRepository};
+    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus};
     use async_trait::async_trait;
     use mockall::mock;
     use std::sync::Arc;
@@ -605,8 +632,8 @@ mod tests {
             conversational_count: 0,
             ci_status: ci,
             head_ref: "sha".to_string(),
-            body: "".to_string(),
-            url: "".to_string(),
+            body: String::new(),
+            url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
             last_seen_at: None,
@@ -623,39 +650,41 @@ mod tests {
         state_repo.expect_load_state().returning(|| Ok(vec![]));
         state_repo.expect_load_archive().returning(|| Ok(vec![]));
         state_repo.expect_save_state().returning(|_| Ok(()));
-        
+
         let state_repo = Arc::new(state_repo);
         let config_dir = std::path::PathBuf::from(".");
         let data_dir = std::path::PathBuf::from(".");
         let backend = ratatui::backend::TestBackend::new(80, 24);
-        
-        let mut app = App::with_deps(github, state_repo, config_dir, data_dir, backend).unwrap();
-        app.is_writer = true; 
-        
+
+        let mut app = App::with_deps(github, state_repo, &config_dir, &data_dir, backend).unwrap();
+        app.is_writer = true;
+
         let mut notifier = MockNotifier::new();
         // Should NOT be called during first sync
         notifier.expect_notify_new_pr().times(0);
         // Should be called AFTER initial sync
         notifier.expect_notify_new_pr().times(1).returning(|_| ());
-        
+
         app.notifier = Box::new(notifier);
-        
+
         let pr = create_test_pr("1", CIStatus::Pending);
-        
+
         // 1. First sync: Should NOT notify
-        app.handle_app_event(AppEvent::PrsUpdated { 
-            query_name: "test".to_string(), 
-            prs: vec![pr.clone()] 
-        }).await;
-        
+        app.handle_app_event(AppEvent::PrsUpdated {
+            query_name: "test".to_string(),
+            prs: vec![pr.clone()],
+        })
+        .await;
+
         // 2. Initial sync done
         app.handle_app_event(AppEvent::InitialSyncDone).await;
-        
+
         // 3. Subsequent update (new PR): SHOULD notify
         let pr2 = create_test_pr("2", CIStatus::Pending);
-        app.handle_app_event(AppEvent::PrsUpdated { 
-            query_name: "test".to_string(), 
-            prs: vec![pr2] 
-        }).await;
+        app.handle_app_event(AppEvent::PrsUpdated {
+            query_name: "test".to_string(),
+            prs: vec![pr2],
+        })
+        .await;
     }
 }

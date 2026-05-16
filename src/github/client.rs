@@ -1,13 +1,14 @@
-use anyhow::{Result, Context};
-use async_trait::async_trait;
 use crate::domain::ports::GithubProvider;
-use crate::domain::pr::{PullRequest, CheckRun, TimelineEvent};
-use crate::github::models::{RawPullRequest, RawCheckRun, RawTimelineEvent};
-use tokio::process::Command;
+use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
+use crate::github::models::{RawCheckRun, RawPullRequest, RawTimelineEvent};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde_json;
+use tokio::process::Command;
 
 use crate::github::rate_limit::RateLimitTracker;
 
+#[derive(Debug)]
 pub struct GhCliClient {
     pub rate_limit: RateLimitTracker,
 }
@@ -19,31 +20,27 @@ impl Default for GhCliClient {
 }
 
 impl GhCliClient {
-    pub fn new() -> Self {
-        Self {
-            rate_limit: RateLimitTracker::new(),
-        }
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { rate_limit: RateLimitTracker::new() }
     }
 
     async fn run_gh(&self, args: &[&str]) -> Result<String> {
         let start = std::time::Instant::now();
-        let output = Command::new("gh")
-            .args(args)
-            .output()
-            .await
-            .context("Failed to execute gh CLI")?;
+        let output =
+            Command::new("gh").args(args).output().await.context("Failed to execute gh CLI")?;
 
-        let duration = start.elapsed().as_millis() as u64;
+        let duration = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let command_str = format!("gh {}", args.join(" "));
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let log_output = if output.status.success() { stdout.clone() } else { stderr.clone() };
-        
+
         crate::logging::record_gh_call(command_str, exit_code, duration, log_output);
 
         if !output.status.success() {
-            return Err(anyhow::anyhow!("gh CLI error: {}", stderr));
+            return Err(anyhow::anyhow!("gh CLI error: {stderr}"));
         }
 
         Ok(stdout)
@@ -52,11 +49,16 @@ impl GhCliClient {
 
 #[async_trait]
 impl GithubProvider for GhCliClient {
-    async fn fetch_prs_by_query(&self, query: &str, limit: Option<u32>) -> Result<Vec<PullRequest>> {
+    async fn fetch_prs_by_query(
+        &self,
+        query: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<PullRequest>> {
         let gql_limit = limit.unwrap_or(100);
-        let gql_query = format!(r#"
+        let gql_query = format!(
+            r"
             query($q: String!) {{
-                search(query: $q, type: ISSUE, first: {}) {{
+                search(query: $q, type: ISSUE, first: {gql_limit}) {{
                     nodes {{
                         ... on PullRequest {{
                             id
@@ -101,18 +103,29 @@ impl GithubProvider for GhCliClient {
                     }}
                 }}
             }}
-        "#, gql_limit);
+        "
+        );
 
-        let output = self.run_gh(&["api", "graphql", "-f", &format!("q={}", query), "-f", &format!("query={}", gql_query)]).await?;
+        let output = self
+            .run_gh(&[
+                "api",
+                "graphql",
+                "-f",
+                &format!("q={query}"),
+                "-f",
+                &format!("query={gql_query}"),
+            ])
+            .await?;
 
-        let val: serde_json::Value = serde_json::from_str(&output)
-            .context("Failed to parse GraphQL response")?;
+        let val: serde_json::Value =
+            serde_json::from_str(&output).context("Failed to parse GraphQL response")?;
 
         if let Some(errors) = val.get("errors") {
-            return Err(anyhow::anyhow!("GraphQL error: {}", errors));
+            return Err(anyhow::anyhow!("GraphQL error: {errors}"));
         }
 
-        let nodes = val.get("data")
+        let nodes = val
+            .get("data")
             .and_then(|d| d.get("search"))
             .and_then(|s| s.get("nodes"))
             .and_then(|n| n.as_array())
@@ -120,26 +133,44 @@ impl GithubProvider for GhCliClient {
 
         let mut prs = Vec::new();
         for node in nodes {
-            if node.is_null() { continue; }
+            if node.is_null() {
+                continue;
+            }
 
             // Map GraphQL structure to RawPullRequest structure for compatibility
             let mut raw_val = node.clone();
 
             // Extract counts
-            let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
-            let review_threads_nodes = node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
-            
-            let total_resolvable = review_threads_nodes.map(|n| n.len() as u64).unwrap_or(0);
-            let unresolved = review_threads_nodes.map(|nodes| {
-                nodes.iter().filter(|n| n.get("isResolved").and_then(|v| v.as_bool()) == Some(false)).count() as u64
-            }).unwrap_or(0);
+            let comments_count = node
+                .get("comments")
+                .and_then(|c| c.get("totalCount"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let review_threads_nodes =
+                node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
+
+            let total_resolvable = review_threads_nodes.map_or(0, |n| n.len() as u64);
+            let unresolved = review_threads_nodes.map_or(0, |nodes| {
+                nodes
+                    .iter()
+                    .filter(|n| {
+                        n.get("isResolved").and_then(serde_json::Value::as_bool) == Some(false)
+                    })
+                    .count() as u64
+            });
 
             if let Some(obj) = raw_val.as_object_mut() {
                 obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
-                obj.insert("review_comments".to_string(), serde_json::Value::from(total_resolvable));
+                obj.insert(
+                    "review_comments".to_string(),
+                    serde_json::Value::from(total_resolvable),
+                );
                 obj.insert("unresolved_count".to_string(), serde_json::Value::from(unresolved));
-                obj.insert("total_resolvable_count".to_string(), serde_json::Value::from(total_resolvable));
-                
+                obj.insert(
+                    "total_resolvable_count".to_string(),
+                    serde_json::Value::from(total_resolvable),
+                );
+
                 // Remove GraphQL specific objects that conflict with RawPullRequest types
                 obj.remove("comments");
                 obj.remove("reviewThreads");
@@ -162,23 +193,26 @@ impl GithubProvider for GhCliClient {
                 }
             }
 
-            let raw: RawPullRequest = serde_json::from_value(raw_val.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to map GraphQL node to RawPullRequest: {}. Node: {}", e, raw_val))?;
+            let raw: RawPullRequest = serde_json::from_value(raw_val.clone()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to map GraphQL node to RawPullRequest: {e}. Node: {raw_val}"
+                )
+            })?;
             prs.push(raw.into());
         }
 
         Ok(prs)
     }
 
-
     async fn fetch_pr_details(&self, repo: &str, pr_number: u32) -> Result<PullRequest> {
-        let (owner, name) = repo.split_once('/')
-            .ok_or_else(|| anyhow::anyhow!("Invalid repo format: {}", repo))?;
-            
-        let gql_query = format!(r#"
+        let (owner, name) =
+            repo.split_once('/').ok_or_else(|| anyhow::anyhow!("Invalid repo format: {repo}"))?;
+
+        let gql_query = format!(
+            r#"
             query {{
-                repository(owner: "{}", name: "{}") {{
-                    pullRequest(number: {}) {{
+                repository(owner: "{owner}", name: "{name}") {{
+                    pullRequest(number: {pr_number}) {{
                         id
                         number
                         title
@@ -219,39 +253,52 @@ impl GithubProvider for GhCliClient {
                     }}
                 }}
             }}
-        "#, owner, name, pr_number);
+        "#
+        );
 
-        let output = self.run_gh(&["api", "graphql", "-f", &format!("query={}", gql_query)]).await?;
-        
-        let val: serde_json::Value = serde_json::from_str(&output)
-            .context("Failed to parse GraphQL response for detail")?;
+        let output = self.run_gh(&["api", "graphql", "-f", &format!("query={gql_query}")]).await?;
+
+        let val: serde_json::Value =
+            serde_json::from_str(&output).context("Failed to parse GraphQL response for detail")?;
 
         if let Some(errors) = val.get("errors") {
-            return Err(anyhow::anyhow!("GraphQL error: {}", errors));
+            return Err(anyhow::anyhow!("GraphQL error: {errors}"));
         }
 
-        let node = val.get("data")
+        let node = val
+            .get("data")
             .and_then(|d| d.get("repository"))
             .and_then(|r| r.get("pullRequest"))
             .ok_or_else(|| anyhow::anyhow!("PR not found or unexpected response"))?;
 
         let mut raw_val = node.clone();
-        
+
         // Extract counts
-        let comments_count = node.get("comments").and_then(|c| c.get("totalCount")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let review_threads_nodes = node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
-        
-        let total_resolvable = review_threads_nodes.map(|n| n.len() as u64).unwrap_or(0);
-        let unresolved = review_threads_nodes.map(|nodes| {
-            nodes.iter().filter(|n| n.get("isResolved").and_then(|v| v.as_bool()) == Some(false)).count() as u64
-        }).unwrap_or(0);
-        
+        let comments_count = node
+            .get("comments")
+            .and_then(|c| c.get("totalCount"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let review_threads_nodes =
+            node.get("reviewThreads").and_then(|r| r.get("nodes")).and_then(|n| n.as_array());
+
+        let total_resolvable = review_threads_nodes.map_or(0, |n| n.len() as u64);
+        let unresolved = review_threads_nodes.map_or(0, |nodes| {
+            nodes
+                .iter()
+                .filter(|n| n.get("isResolved").and_then(serde_json::Value::as_bool) == Some(false))
+                .count() as u64
+        });
+
         if let Some(obj) = raw_val.as_object_mut() {
             obj.insert("commentsCount".to_string(), serde_json::Value::from(comments_count));
             obj.insert("review_comments".to_string(), serde_json::Value::from(total_resolvable));
             obj.insert("unresolved_count".to_string(), serde_json::Value::from(unresolved));
-            obj.insert("total_resolvable_count".to_string(), serde_json::Value::from(total_resolvable));
-            
+            obj.insert(
+                "total_resolvable_count".to_string(),
+                serde_json::Value::from(total_resolvable),
+            );
+
             if let Some(author_obj) = node.get("author").and_then(|a| a.as_object()) {
                 obj.insert("author".to_string(), serde_json::Value::from(author_obj.clone()));
             }
@@ -268,75 +315,86 @@ impl GithubProvider for GhCliClient {
             }
         }
 
-        let raw: RawPullRequest = serde_json::from_value(raw_val.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to map GraphQL detail node to RawPullRequest: {}. Node: {}", e, raw_val))?;
+        let raw: RawPullRequest = serde_json::from_value(raw_val.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to map GraphQL detail node to RawPullRequest: {e}. Node: {raw_val}"
+            )
+        })?;
 
         Ok(raw.into())
     }
 
     async fn fetch_check_runs(&self, repo: &str, ref_: &str) -> Result<Vec<CheckRun>> {
         // gh api repos/{owner}/{repo}/commits/{ref}/check-runs
-        let path = format!("repos/{}/commits/{}/check-runs", repo, ref_);
+        let path = format!("repos/{repo}/commits/{ref_}/check-runs");
         let output = self.run_gh(&["api", &path]).await?;
-        
+
         let json: serde_json::Value = serde_json::from_str(&output)?;
         let check_runs_raw: Vec<RawCheckRun> = serde_json::from_value(json["check_runs"].clone())?;
 
-        Ok(check_runs_raw.into_iter().map(|r| CheckRun {
-            name: r.name,
-            status: r.status,
-            conclusion: r.conclusion,
-            url: r.url,
-        }).collect())
+        Ok(check_runs_raw
+            .into_iter()
+            .map(|r| CheckRun {
+                name: r.name,
+                status: r.status,
+                conclusion: r.conclusion,
+                url: r.url,
+            })
+            .collect())
     }
 
     async fn fetch_timeline(&self, repo: &str, pr_number: u32) -> Result<Vec<TimelineEvent>> {
         // gh api repos/{owner}/{repo}/issues/{number}/timeline
-        let path = format!("repos/{}/issues/{}/timeline", repo, pr_number);
+        let path = format!("repos/{repo}/issues/{pr_number}/timeline");
         let output = self.run_gh(&["api", &path]).await?;
 
         let raws: Vec<RawTimelineEvent> = serde_json::from_str(&output)?;
 
-        Ok(raws.into_iter().map(|r| {
-            let content = match r.typename.as_str() {
-                "IssueComment" => r.body.clone(),
-                "PullRequestReview" => {
-                    let state = r.state.clone().unwrap_or_else(|| "COMMENTED".to_string());
-                    let body = r.body.as_ref().map(|b| format!(": {}", b)).unwrap_or_default();
-                    Some(format!("{}{}", state, body))
-                }
-                "PullRequestReviewThread" => Some("started a review thread".to_string()),
-                "MergedEvent" => Some("merged this pull request".to_string()),
-                "ClosedEvent" => Some("closed this pull request".to_string()),
-                "ReopenedEvent" => Some("reopened this pull request".to_string()),
-                "LabeledEvent" => r.label.as_ref().map(|l| format!("added label: {}", l.name)),
-                "UnlabeledEvent" => r.label.as_ref().map(|l| format!("removed label: {}", l.name)),
-                "Commit" => r.message.clone(),
-                _ => None,
-            };
+        Ok(raws
+            .into_iter()
+            .map(|r| {
+                let content = match r.typename.as_str() {
+                    "IssueComment" => r.body.clone(),
+                    "PullRequestReview" => {
+                        let state = r.state.clone().unwrap_or_else(|| "COMMENTED".to_string());
+                        let body = r.body.as_ref().map(|b| format!(": {b}")).unwrap_or_default();
+                        Some(format!("{state}{body}"))
+                    }
+                    "PullRequestReviewThread" => Some("started a review thread".to_string()),
+                    "MergedEvent" => Some("merged this pull request".to_string()),
+                    "ClosedEvent" => Some("closed this pull request".to_string()),
+                    "ReopenedEvent" => Some("reopened this pull request".to_string()),
+                    "LabeledEvent" => r.label.as_ref().map(|l| format!("added label: {}", l.name)),
+                    "UnlabeledEvent" => {
+                        r.label.as_ref().map(|l| format!("removed label: {}", l.name))
+                    }
+                    "Commit" => r.message.clone(),
+                    _ => None,
+                };
 
-            TimelineEvent {
-                id: r.id.unwrap_or_default(),
-                event_type: r.typename,
-                actor: r.actor.map(|a| a.login).unwrap_or_else(|| "unknown".to_string()),
-                created_at: r.created_at.unwrap_or_default(),
-                content,
-            }
-        }).collect())
+                TimelineEvent {
+                    id: r.id.unwrap_or_default(),
+                    event_type: r.typename,
+                    actor: r.actor.map_or_else(|| "unknown".to_string(), |a| a.login),
+                    created_at: r.created_at.unwrap_or_default(),
+                    content,
+                }
+            })
+            .collect())
     }
 
     async fn fetch_rate_limit(&self) -> Result<crate::domain::pr::RateLimitStatus> {
         let output = self.run_gh(&["api", "rate_limit"]).await?;
         let json: serde_json::Value = serde_json::from_str(&output)?;
-        
+
         let core = &json["resources"]["core"];
         let status = crate::domain::pr::RateLimitStatus {
             remaining: core["remaining"].as_u64().unwrap_or(0) as u32,
             limit: core["limit"].as_u64().unwrap_or(0) as u32,
             reset_at: core["reset"].as_u64().unwrap_or(0),
         };
-        
-        self.rate_limit.update(status.clone());
+
+        self.rate_limit.update(&status);
         Ok(status)
     }
 
@@ -354,8 +412,8 @@ impl GithubProvider for GhCliClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::pr::{CIStatus, PRStatus, ReviewStatus};
     use crate::github::models::*;
-    use crate::domain::pr::{PRStatus, ReviewStatus, CIStatus};
 
     #[test]
     fn test_raw_to_pr_conversion() {
@@ -377,17 +435,17 @@ mod tests {
             additions: Some(10),
             deletions: Some(5),
             review_decision: Some("APPROVED".to_string()),
-            status_check_rollup: Some(RawStatusCheckRollup::Summary { state: "SUCCESS".to_string() }),
+            status_check_rollup: Some(RawStatusCheckRollup::Summary {
+                state: "SUCCESS".to_string(),
+            }),
             head_ref_oid: Some("sha123".to_string()),
             url: "https://github.com/org/repo/pull/123".to_string(),
-            review_requests: Some(vec![
-                RawReviewRequest {
-                    requested_reviewer: Some(RawRequestedReviewer {
-                        typename: "User".to_string(),
-                        login: Some("bob".to_string()),
-                    })
-                }
-            ]),
+            review_requests: Some(vec![RawReviewRequest {
+                requested_reviewer: Some(RawRequestedReviewer {
+                    typename: "User".to_string(),
+                    login: Some("bob".to_string()),
+                }),
+            }]),
             latest_reviews: None,
         };
 
@@ -467,7 +525,8 @@ mod tests {
             }
         ]"#;
 
-        let raws: Vec<RawPullRequest> = serde_json::from_str(json).expect("Failed to parse sample JSON");
+        let raws: Vec<RawPullRequest> =
+            serde_json::from_str(json).expect("Failed to parse sample JSON");
         assert_eq!(raws.len(), 1);
         let pr: PullRequest = raws[0].clone().into();
         assert_eq!(pr.number, 1);
@@ -503,7 +562,8 @@ mod tests {
   }
 ]"#;
 
-        let raws: Vec<RawPullRequest> = serde_json::from_str(json).expect("Failed to parse user provided JSON");
+        let raws: Vec<RawPullRequest> =
+            serde_json::from_str(json).expect("Failed to parse user provided JSON");
         assert_eq!(raws.len(), 1);
         let pr: PullRequest = raws[0].clone().into();
         assert_eq!(pr.id, "PR_kwDOSZQ-mc7Z-0SB");

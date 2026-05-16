@@ -1,6 +1,7 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::domain::pr::RateLimitStatus;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[derive(Debug)]
 pub struct RateLimitTracker {
     remaining: AtomicU32,
     limit: AtomicU32,
@@ -14,7 +15,8 @@ impl Default for RateLimitTracker {
 }
 
 impl RateLimitTracker {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             remaining: AtomicU32::new(5000),
             limit: AtomicU32::new(5000),
@@ -22,7 +24,7 @@ impl RateLimitTracker {
         }
     }
 
-    pub fn update(&self, status: RateLimitStatus) {
+    pub fn update(&self, status: &RateLimitStatus) {
         self.remaining.store(status.remaining, Ordering::SeqCst);
         self.limit.store(status.limit, Ordering::SeqCst);
         self.reset_at.store(status.reset_at, Ordering::SeqCst);
@@ -49,16 +51,12 @@ mod tests {
     fn test_rate_limit_tracker() {
         let tracker = RateLimitTracker::new();
         assert_eq!(tracker.get_remaining(), 5000);
-        
-        tracker.update(RateLimitStatus {
-            remaining: 100,
-            limit: 5000,
-            reset_at: 123456,
-        });
-        
+
+        tracker.update(&RateLimitStatus { remaining: 100, limit: 5000, reset_at: 123_456 });
+
         assert_eq!(tracker.get_remaining(), 100);
         let status = tracker.get_status();
         assert_eq!(status.remaining, 100);
-        assert_eq!(status.reset_at, 123456);
+        assert_eq!(status.reset_at, 123_456);
     }
 }

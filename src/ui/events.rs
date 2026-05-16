@@ -1,5 +1,5 @@
-use crate::domain::pr::{PullRequest, CheckRun, TimelineEvent};
 use crate::config::AppConfig;
+use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {

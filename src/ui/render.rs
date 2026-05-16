@@ -1,31 +1,27 @@
+use crate::config::AppConfig;
 use crate::domain::pr::PullRequest;
+use crate::ui::components::{
+    archive::render_archive, detail::render_detail, diagnostics::render_diagnostics,
+    help::render_help, list::render_list, settings::render_settings, status_bar::render_status_bar,
+};
+use crate::ui::theme::Theme;
 use anyhow::Result;
 use ratatui::{
+    Frame, Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Modifier},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Terminal,
-    Frame,
 };
 use std::io;
-use crate::config::AppConfig;
-use crate::ui::theme::Theme;
-use crate::ui::components::{
-    list::render_list,
-    detail::render_detail,
-    settings::render_settings,
-    help::render_help,
-    diagnostics::render_diagnostics,
-    status_bar::render_status_bar,
-    archive::render_archive,
-};
 
+#[allow(missing_debug_implementations)]
 pub struct Renderer<B: Backend> {
     terminal: Terminal<B>,
 }
 
+#[derive(Debug)]
 pub struct DrawContext<'a> {
     pub prs: &'a [PullRequest],
     pub selected_index: usize,
@@ -47,26 +43,27 @@ pub struct DrawContext<'a> {
     pub is_testing_query: bool,
 }
 
-impl<B: Backend> Renderer<B> 
-where 
-    B::Error: std::error::Error + Send + Sync + 'static 
+impl<B: Backend> Renderer<B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     pub fn new(backend: B) -> Result<Self> {
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
     }
 
-    pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
+    pub const fn terminal_mut(&mut self) -> &mut Terminal<B> {
         &mut self.terminal
     }
 
-    pub fn draw(&mut self, ctx: DrawContext) -> Result<()> {
+    pub fn draw(&mut self, ctx: &DrawContext<'_>) -> Result<()> {
         let theme = Theme::from_name(&ctx.config.theme);
 
         self.terminal.draw(|f| {
-            let has_input = matches!(ctx.mode, crate::app::AppMode::Search | crate::app::AppMode::Follow);
+            let has_input =
+                matches!(ctx.mode, crate::app::AppMode::Search | crate::app::AppMode::Follow);
             let show_status = ctx.config.show_status_bar;
-            
+
             let constraints = [
                 Constraint::Min(0),
                 if has_input { Constraint::Length(3) } else { Constraint::Length(0) },
@@ -97,39 +94,49 @@ where
                 }
                 crate::app::AppMode::AddQueryName | crate::app::AppMode::AddQuerySearch => {
                     render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
-                    let title = if ctx.mode == &crate::app::AppMode::AddQueryName { " Enter Query Name " } else { " Enter Search Query " };
-                    let buffer = if ctx.mode == &crate::app::AppMode::AddQueryName { ctx.query_name_buffer } else { ctx.query_search_buffer };
-                    
+                    let title = if ctx.mode == &crate::app::AppMode::AddQueryName {
+                        " Enter Query Name "
+                    } else {
+                        " Enter Search Query "
+                    };
+                    let buffer = if ctx.mode == &crate::app::AppMode::AddQueryName {
+                        ctx.query_name_buffer
+                    } else {
+                        ctx.query_search_buffer
+                    };
+
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme.info))
                         .title(title)
                         .title_style(Style::default().fg(theme.title));
-                    
+
                     let modal_area = centered_rect(60, 20, f.area());
                     f.render_widget(ratatui::widgets::Clear, modal_area);
-                    
-                    let text = Paragraph::new(buffer)
-                        .block(block)
-                        .style(Style::default().fg(theme.text));
+
+                    let text =
+                        Paragraph::new(buffer).block(block).style(Style::default().fg(theme.text));
                     f.render_widget(text, modal_area);
                 }
                 crate::app::AppMode::ConfirmQuery => {
                     render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
-                    
+
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme.info))
                         .title(" Confirm New Query ")
                         .title_style(Style::default().fg(theme.title));
-                    
+
                     let modal_area = centered_rect(70, 60, f.area());
                     f.render_widget(ratatui::widgets::Clear, modal_area);
-                    
+
                     let mut text = Vec::new();
                     text.push(Line::from(vec![
                         Span::styled("Name: ", Style::default().fg(theme.gray)),
-                        Span::styled(ctx.query_name_buffer, Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            ctx.query_name_buffer,
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ),
                     ]));
                     text.push(Line::from(vec![
                         Span::styled("Query: ", Style::default().fg(theme.gray)),
@@ -138,54 +145,83 @@ where
                     text.push(Line::from(""));
 
                     if ctx.is_testing_query {
-                        text.push(Line::from(Span::styled(" Testing query... ", Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))));
+                        text.push(Line::from(Span::styled(
+                            " Testing query... ",
+                            Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC),
+                        )));
                     } else if let Some(err) = ctx.query_test_error {
-                        text.push(Line::from(Span::styled(format!(" Error: {}", err), Style::default().fg(theme.error))));
+                        text.push(Line::from(Span::styled(
+                            format!(" Error: {err}"),
+                            Style::default().fg(theme.error),
+                        )));
                         text.push(Line::from(""));
-                        text.push(Line::from(Span::styled(" Press Esc to go back and edit. ", Style::default().fg(theme.gray))));
+                        text.push(Line::from(Span::styled(
+                            " Press Esc to go back and edit. ",
+                            Style::default().fg(theme.gray),
+                        )));
                     } else if let Some(prs) = ctx.query_test_results {
                         text.push(Line::from(vec![
-                            Span::styled(format!(" Matches: {}", prs.len()), Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-                            if prs.len() >= 5 { Span::styled(" (showing top 5)", Style::default().fg(theme.gray)) } else { Span::raw("") },
+                            Span::styled(
+                                format!(" Matches: {}", prs.len()),
+                                Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
+                            ),
+                            if prs.len() >= 5 {
+                                Span::styled(" (showing top 5)", Style::default().fg(theme.gray))
+                            } else {
+                                Span::raw("")
+                            },
                         ]));
                         text.push(Line::from(""));
-                        
+
                         for pr in prs.iter().take(5) {
                             text.push(Line::from(vec![
-                                Span::styled(format!(" #{} ", pr.number), Style::default().fg(theme.gray)),
+                                Span::styled(
+                                    format!(" #{} ", pr.number),
+                                    Style::default().fg(theme.gray),
+                                ),
                                 Span::styled(&pr.title, Style::default().fg(theme.text)),
                             ]));
                         }
-                        
+
                         text.push(Line::from(""));
                         text.push(Line::from(vec![
                             Span::styled(" Add this query? ", Style::default().fg(theme.text)),
-                            Span::styled(" (y)es / (n)o ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                " (y)es / (n)o ",
+                                Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
+                            ),
                         ]));
                     }
-                    
+
                     let paragraph = Paragraph::new(text).block(block);
                     f.render_widget(paragraph, modal_area);
                 }
                 _ => {
                     let area = chunks[0];
-                    let direction = if area.width < 120 { Direction::Vertical } else { Direction::Horizontal };
+                    let direction =
+                        if area.width < 120 { Direction::Vertical } else { Direction::Horizontal };
                     let main_chunks = Layout::default()
                         .direction(direction)
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .constraints(
+                            [Constraint::Percentage(50), Constraint::Percentage(50)].as_ref(),
+                        )
                         .split(area);
 
                     render_list(f, main_chunks[0], ctx.prs, ctx.selected_index, ctx.config, &theme);
-                    render_detail(f, main_chunks[1], crate::ui::components::detail::DetailProps {
-                        prs: ctx.prs,
-                        selected_index: ctx.selected_index,
-                        checks: ctx.checks,
-                        timeline: ctx.timeline,
-                        config: ctx.config,
-                        theme: &theme,
-                        detail_focused: ctx.detail_focused,
-                        detail_scroll: ctx.detail_scroll,
-                    });
+                    render_detail(
+                        f,
+                        main_chunks[1],
+                        &crate::ui::components::detail::DetailProps {
+                            prs: ctx.prs,
+                            selected_index: ctx.selected_index,
+                            checks: ctx.checks,
+                            timeline: ctx.timeline,
+                            config: ctx.config,
+                            theme: &theme,
+                            detail_focused: ctx.detail_focused,
+                            detail_scroll: ctx.detail_scroll,
+                        },
+                    );
                 }
             }
 
@@ -208,7 +244,14 @@ where
             }
 
             if show_status {
-                render_status_bar(f, chunks[2], ctx.mode, &theme, ctx.last_refresh, ctx.error_message);
+                render_status_bar(
+                    f,
+                    chunks[2],
+                    ctx.mode,
+                    &theme,
+                    ctx.last_refresh,
+                    ctx.error_message,
+                );
             }
         })?;
         Ok(())
@@ -218,17 +261,17 @@ where
 fn render_log_detail(f: &mut Frame, area: Rect, selected_index: usize, theme: &Theme) {
     let calls = crate::logging::get_gh_calls();
     let calls_reversed: Vec<_> = calls.iter().rev().collect();
-    
+
     if let Some(call) = calls_reversed.get(selected_index) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
             .title(format!(" Output: {} ", call.command))
             .title_style(Style::default().fg(theme.title));
-            
+
         let modal_area = centered_rect(80, 80, area);
         f.render_widget(ratatui::widgets::Clear, modal_area);
-        
+
         let text = Paragraph::new(call.output.as_str())
             .block(block)
             .wrap(ratatui::widgets::Wrap { trim: false });
@@ -261,14 +304,22 @@ pub type CrosstermRenderer = Renderer<ratatui::backend::CrosstermBackend<io::Std
 impl Renderer<ratatui::backend::CrosstermBackend<io::Stdout>> {
     pub fn init(&mut self) -> Result<()> {
         crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )?;
         self.terminal.hide_cursor()?;
         Ok(())
     }
 
     pub fn restore(&mut self) -> Result<()> {
         crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen, crossterm::event::DisableMouseCapture)?;
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        )?;
         self.terminal.show_cursor()?;
         Ok(())
     }
@@ -277,9 +328,9 @@ impl Renderer<ratatui::backend::CrosstermBackend<io::Stdout>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
-    use crate::domain::pr::{PullRequest, PRStatus, ReviewStatus, CIStatus};
     use crate::app::AppMode;
+    use crate::domain::pr::{CIStatus, PRStatus, PullRequest, ReviewStatus};
+    use ratatui::backend::TestBackend;
 
     fn create_test_pr() -> PullRequest {
         PullRequest {
@@ -317,26 +368,28 @@ mod tests {
         let mut renderer = Renderer::new(backend).unwrap();
         let prs = vec![create_test_pr()];
         let config = AppConfig::default();
-        
-        renderer.draw(DrawContext {
-            prs: &prs,
-            selected_index: 0,
-            settings_selected_index: 0,
-            diagnostic_selected_index: 0,
-            checks: &[],
-            timeline: &[],
-            mode: &AppMode::Normal,
-            detail_focused: false,
-            detail_scroll: 0,
-            input_buffer: "",
-            config: &config,
-            last_refresh: None,
-            error_message: None,
-            query_name_buffer: "",
-            query_search_buffer: "",
-            query_test_results: None,
-            query_test_error: None,
-            is_testing_query: false,
-        }).unwrap();
+
+        renderer
+            .draw(&DrawContext {
+                prs: &prs,
+                selected_index: 0,
+                settings_selected_index: 0,
+                diagnostic_selected_index: 0,
+                checks: &[],
+                timeline: &[],
+                mode: &AppMode::Normal,
+                detail_focused: false,
+                detail_scroll: 0,
+                input_buffer: "",
+                config: &config,
+                last_refresh: None,
+                error_message: None,
+                query_name_buffer: "",
+                query_search_buffer: "",
+                query_test_results: None,
+                query_test_error: None,
+                is_testing_query: false,
+            })
+            .unwrap();
     }
 }

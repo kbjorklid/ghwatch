@@ -1,11 +1,12 @@
-use chrono::{DateTime, Local, Datelike, Timelike};
+use chrono::{DateTime, Datelike, Local, Timelike};
 
+#[must_use]
 pub fn format_relative_time(iso_str: &str) -> String {
     let dt = match DateTime::parse_from_rfc3339(iso_str) {
         Ok(dt) => dt.with_timezone(&Local),
         Err(_) => return iso_str.to_string(),
     };
-    
+
     let now = Local::now();
     let duration = now.signed_duration_since(dt);
     let seconds = duration.num_seconds();
@@ -16,7 +17,7 @@ pub fn format_relative_time(iso_str: &str) -> String {
 
     if seconds < 3600 {
         let mins = seconds / 60;
-        return format!("{} minutes ago", mins);
+        return format!("{mins} minutes ago");
     }
 
     let today = now.date_naive();
@@ -25,7 +26,7 @@ pub fn format_relative_time(iso_str: &str) -> String {
     if dt_date == today {
         let hours = duration.num_hours();
         let mins = duration.num_minutes() % 60;
-        return format!("{} hours {} minutes ago", hours, mins);
+        return format!("{hours} hours {mins} minutes ago");
     }
 
     if dt_date == today.pred_opt().unwrap_or(today) {
@@ -41,7 +42,7 @@ pub fn format_relative_time(iso_str: &str) -> String {
         return format!("On {}", dt.weekday());
     }
 
-    format!("{} days ago", days_ago)
+    format!("{days_ago} days ago")
 }
 
 #[cfg(test)]
@@ -52,7 +53,7 @@ mod tests {
     #[test]
     fn test_format_relative_time() {
         let now = Local::now();
-        
+
         // < 60 mins
         let t1 = (now - Duration::minutes(5)).to_rfc3339();
         assert_eq!(format_relative_time(&t1), "5 minutes ago");
@@ -61,19 +62,25 @@ mod tests {
         let t2 = (now - Duration::hours(2) - Duration::minutes(10)).to_rfc3339();
         // This depends on whether it crossed midnight, but for test usually fine
         if (now - Duration::hours(2)).date_naive() == now.date_naive() {
-             assert_eq!(format_relative_time(&t2), "2 hours 10 minutes ago");
+            assert_eq!(format_relative_time(&t2), "2 hours 10 minutes ago");
         }
 
         // Yesterday
         let yesterday = now - Duration::days(1);
         let t3 = Local.from_local_datetime(&yesterday.naive_local()).unwrap().to_rfc3339();
-        let expected_yesterday = format!("Yesterday {:02}:{:02}", yesterday.hour(), yesterday.minute());
+        let expected_yesterday =
+            format!("Yesterday {:02}:{:02}", yesterday.hour(), yesterday.minute());
         assert_eq!(format_relative_time(&t3), expected_yesterday);
 
         // 3 days ago
         let three_days = now - Duration::days(3);
         let t4 = Local.from_local_datetime(&three_days.naive_local()).unwrap().to_rfc3339();
-        let expected_3d = format!("On {}, {:02}:{:02}", three_days.weekday(), three_days.hour(), three_days.minute());
+        let expected_3d = format!(
+            "On {}, {:02}:{:02}",
+            three_days.weekday(),
+            three_days.hour(),
+            three_days.minute()
+        );
         assert_eq!(format_relative_time(&t4), expected_3d);
 
         // 6 days ago

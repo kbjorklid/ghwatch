@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod watcher;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum GroupMode {
     #[default]
     None,
@@ -47,7 +46,7 @@ pub struct QueryConfig {
     pub enabled: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -56,14 +55,8 @@ fn default_theme() -> String {
 }
 
 fn default_columns() -> Vec<Column> {
-    vec![
-        Column::Author,
-        Column::Age,
-        Column::Diff,
-        Column::Comments,
-    ]
+    vec![Column::Author, Column::Age, Column::Diff, Column::Comments]
 }
-
 
 impl AppConfig {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
@@ -71,7 +64,7 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = toml::from_str(&content)?;
+        let config: Self = toml::from_str(&content)?;
         Ok(config)
     }
 }
@@ -79,14 +72,12 @@ impl AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            queries: vec![
-                QueryConfig {
-                    name: "My PRs".to_string(),
-                    search: "is:pr author:@me state:open".to_string(),
-                    interval: "60s".to_string(),
-                    enabled: true,
-                }
-            ],
+            queries: vec![QueryConfig {
+                name: "My PRs".to_string(),
+                search: "is:pr author:@me state:open".to_string(),
+                interval: "60s".to_string(),
+                enabled: true,
+            }],
             polling_interval_ms: 30000,
             use_nerd_fonts: true,
             current_user: String::new(),

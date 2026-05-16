@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use derive_more::Display;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {
     pub id: String,
     pub number: u32,
@@ -30,13 +30,13 @@ pub struct PullRequest {
     pub last_seen_conversational_count: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reviewer {
     pub login: String,
     pub status: String, // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING"
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     pub name: String,
     pub status: String,
@@ -44,7 +44,7 @@ pub struct CheckRun {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineEvent {
     pub id: String,
     pub event_type: String,
@@ -53,21 +53,21 @@ pub struct TimelineEvent {
     pub content: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum PRStatus {
     Open,
     Closed,
     Merged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum ReviewStatus {
     Pending,
     Approved,
     ChangesRequested,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum CIStatus {
     Pending,
     Passing,
