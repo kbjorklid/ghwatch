@@ -27,6 +27,8 @@ pub struct PullRequest {
     pub url: String,
     pub requested_reviewers: Vec<String>,
     pub reviewers: Vec<Reviewer>,
+    #[serde(default)]
+    pub is_draft: bool,
     pub last_seen_at: Option<String>,
     pub last_seen_unresolved_count: u32,
     pub last_seen_total_resolvable_count: u32,
@@ -125,6 +127,7 @@ mod tests {
             url: "https://github.com/org/repo/pull/42".to_string(),
             requested_reviewers: vec!["bob".to_string()],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,

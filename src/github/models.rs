@@ -36,6 +36,8 @@ pub struct RawPullRequest {
     pub review_requests: Option<Vec<RawReviewRequest>>,
     #[serde(rename = "latestReviews")]
     pub latest_reviews: Option<Vec<RawReview>>,
+    #[serde(rename = "isDraft", default)]
+    pub is_draft: bool,
 }
 
 impl From<RawPullRequest> for PullRequest {
@@ -137,6 +139,7 @@ impl From<RawPullRequest> for PullRequest {
             url: raw.url,
             requested_reviewers,
             reviewers,
+            is_draft: raw.is_draft,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,

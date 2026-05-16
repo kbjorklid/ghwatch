@@ -269,6 +269,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -333,6 +334,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -381,6 +383,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -426,6 +429,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -445,11 +449,7 @@ mod tests {
         let lines = render_pr_item(&pr, false, &config, &theme, &icons, 100);
 
         assert_eq!(lines[0].spans[1].content, "● ", "Red dot should show ● marker");
-        assert_eq!(
-            lines[0].spans[1].style.fg,
-            Some(theme.error),
-            "Red dot should use error color"
-        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(theme.error), "Red dot should use error color");
     }
 
     #[test]
@@ -478,6 +478,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None, // old field still None → old code would show ● (is_unread=true)
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -529,6 +530,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -546,8 +548,7 @@ mod tests {
 
         let lines = render_pr_item(&pr, false, &config, &theme, &icons, 100);
 
-        let line1_content: String =
-            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let line1_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             !line1_content.contains("! "),
             "Old '! ' attention marker should not appear in new design. Got: {line1_content}"
@@ -579,6 +580,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: Some("some-time".to_string()),
             last_seen_unresolved_count: 1,
             last_seen_total_resolvable_count: 1,

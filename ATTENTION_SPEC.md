@@ -165,7 +165,7 @@ First appearance is when `prev_state.is_none()`. Retroactive firing logic is a b
 - Config: quiet period, per-rule toggles, open-in-browser-marks-seen
 
 ### Phase 4 — Two missing clearing events
-- [ ] Done
+- [x] Done
 
 Two clearing events from the table above are not yet implemented. Both belong inside `evaluate()` Phase 1 (the clearing block) in `src/domain/attention.rs`.
 

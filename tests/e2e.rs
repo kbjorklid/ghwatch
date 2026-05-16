@@ -59,6 +59,7 @@ fn create_test_pr(id: &str, number: u32) -> PullRequest {
         url: String::new(),
         requested_reviewers: vec![],
         reviewers: vec![],
+        is_draft: false,
         last_seen_at: None,
         last_seen_unresolved_count: 0,
         last_seen_total_resolvable_count: 0,
@@ -804,5 +805,58 @@ async fn test_open_in_browser_does_not_mark_seen_when_disabled() {
     assert!(
         app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::CiFailed),
         "Attention state should NOT be cleared when open_in_browser_marks_seen is false"
+    );
+}
+
+#[tokio::test]
+async fn test_converted_to_draft_clears_review_requested() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.author = "otheruser".to_string();
+    pr1.is_draft = false;
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-draft-attn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+    app.config.current_user = "testuser".to_string();
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::ReviewRequested),
+        "ReviewRequested should be active before conversion to draft"
+    );
+
+    // Poll arrives: same PR but now is_draft=true
+    let mut pr1_draft = pr1.clone();
+    pr1_draft.is_draft = true;
+    pr1_draft.updated_at = "2024-05-01T11:00:00Z".to_string();
+
+    app.is_first_sync = false;
+    app.merge_prs(vec![pr1_draft], false).await;
+
+    let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
+    assert!(
+        !pr.attention_state.active_reasons.contains(&TriggerReason::ReviewRequested),
+        "ReviewRequested should be cleared after PR converts to draft"
     );
 }

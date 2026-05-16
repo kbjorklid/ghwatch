@@ -67,6 +67,7 @@ impl GithubProvider for GhCliClient {
                             author {{ login }}
                             repository {{ nameWithOwner }}
                             state
+                            isDraft
                             createdAt
                             updatedAt
                             body
@@ -220,6 +221,7 @@ impl GithubProvider for GhCliClient {
                         author {{ login }}
                         repository {{ nameWithOwner }}
                         state
+                        isDraft
                         createdAt
                         updatedAt
                         body
@@ -451,6 +453,7 @@ mod tests {
                 }),
             }]),
             latest_reviews: None,
+            is_draft: false,
         };
 
         let pr: PullRequest = raw.into();

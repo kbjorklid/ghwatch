@@ -174,6 +174,21 @@ pub fn evaluate(
         return state;
     }
 
+    // User posted a new comment → clear all reasons
+    if !is_first {
+        let user_posted_new_comment = timeline.iter().any(|e| {
+            is_comment_event(e) && e.actor == current_user && is_newer_than(e, last_seen)
+        });
+        if user_posted_new_comment {
+            apply_user_activity(&mut state);
+        }
+    }
+
+    // PR converted to draft → remove ReviewRequested and ReReviewRequested
+    if new_pr.is_draft && prev_pr.is_some_and(|p| !p.is_draft) {
+        state.remove_reasons(&[TriggerReason::ReviewRequested, TriggerReason::ReReviewRequested]);
+    }
+
     // CI passes → remove CiFailed
     if new_pr.ci_status == CIStatus::Passing {
         state.active_reasons.remove(&TriggerReason::CiFailed);
@@ -389,6 +404,7 @@ mod tests {
             url: String::new(),
             requested_reviewers: vec![],
             reviewers: vec![],
+            is_draft: false,
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -1234,5 +1250,159 @@ mod tests {
         let comment = make_comment("bob", "2024-01-02T06:00:00Z", "Nice work");
         let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
         assert_eq!(s.last_comment_at, parse_ts("2024-01-02T06:00:00Z"));
+    }
+
+    // --- Cycle 10: Item A — user activity clears all ---
+
+    #[test]
+    fn test_user_activity_clears_all_reasons() {
+        // own PR with Approved in prev_state (no targeted clear for Approved)
+        // user posts a new comment (within quiet period so NewComments won't re-fire)
+        // expect all reasons cleared
+        let pr = make_pr("me"); // ci_status=Passing, no reviewers
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::Approved]),
+            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
+            ..Default::default()
+        };
+        // 10 min before now() — within the 15-min quiet period, so NewComments won't re-fire
+        let user_comment = make_comment("me", "2024-01-02T11:50:00Z", "Working on it");
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.is_empty(), "User activity should clear all reasons");
+    }
+
+    #[test]
+    fn test_user_activity_not_fired_on_first_appearance() {
+        // first appearance (no prev_state), own PR with CI failing
+        // user has an old comment in timeline
+        // old comment should NOT clear retroactively-set CiFailed
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "Working on it");
+        let s = evaluate(None, None, &pr, &[user_comment], "me", now(), &AttentionConfig::default());
+        assert!(
+            s.active_reasons.contains(&TriggerReason::CiFailed),
+            "User activity on first appearance must not suppress retroactive triggers"
+        );
+    }
+
+    // --- Cycle 11: Item B — PR converted to draft clears ReviewRequested / ReReviewRequested ---
+
+    #[test]
+    fn test_converted_to_draft_clears_review_requested() {
+        // prev_pr non-draft, new_pr draft; prev_state has ReviewRequested + Mentioned
+        // expect ReviewRequested gone, Mentioned still present
+        let mut prev_pr = make_pr("alice");
+        prev_pr.is_draft = false;
+        let mut new_pr = make_pr("alice");
+        new_pr.is_draft = true;
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([
+                TriggerReason::ReviewRequested,
+                TriggerReason::Mentioned,
+            ]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested should be cleared when PR converts to draft"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned should remain when PR converts to draft"
+        );
+    }
+
+    #[test]
+    fn test_converted_to_draft_no_fire_if_already_draft() {
+        // prev_pr draft, new_pr draft (stable state) — no spurious clear
+        let mut prev_pr = make_pr("alice");
+        prev_pr.is_draft = true;
+        let mut new_pr = make_pr("alice");
+        new_pr.is_draft = true;
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must not be spuriously cleared on stable draft state"
+        );
+    }
+
+    #[test]
+    fn test_non_draft_to_non_draft_no_clear() {
+        // prev_pr non-draft, new_pr non-draft — no clear
+        let prev_pr = make_pr("alice"); // is_draft defaults to false
+        let new_pr = make_pr("alice");
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must not be cleared in non-draft to non-draft transition"
+        );
+    }
+
+    #[test]
+    fn test_user_activity_not_fired_for_others_comment() {
+        // other's PR, Mentioned in prev_state
+        // a different user posts a new comment — user activity check should NOT trigger
+        let pr = make_pr("alice");
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::Mentioned]),
+            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
+            ..Default::default()
+        };
+        let other_comment = make_comment("bob", "2024-01-02T01:00:00Z", "LGTM");
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Others' comments must not clear active reasons"
+        );
     }
 }
