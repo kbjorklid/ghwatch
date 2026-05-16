@@ -52,6 +52,8 @@ pub struct TimelineEvent {
     pub actor: String,
     pub created_at: String,
     pub content: Option<String>,
+    #[serde(default)]
+    pub reviewer_login: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]

@@ -380,6 +380,7 @@ impl GithubProvider for GhCliClient {
                     actor: r.actor.map_or_else(|| "unknown".to_string(), |a| a.login),
                     created_at: r.created_at.unwrap_or_default(),
                     content,
+                    reviewer_login: None,
                 }
             })
             .collect())

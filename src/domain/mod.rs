@@ -1,3 +1,4 @@
+pub mod attention;
 pub mod lifecycle;
 pub mod ports;
 pub mod pr;
