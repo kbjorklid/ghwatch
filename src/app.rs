@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::domain::attention;
 use crate::domain::ports::{GithubProvider, StateRepository};
 use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
 use crate::github::client::GhCliClient;
@@ -8,8 +9,10 @@ use crate::storage::local::FileStateRepository;
 use crate::ui::events::AppEvent;
 use crate::ui::render::Renderer;
 use anyhow::Result;
+use chrono::Utc;
 use crossterm::event;
 use ratatui::backend::Backend;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -82,6 +85,7 @@ where
     pub query_test_results: Option<Vec<PullRequest>>,
     pub query_test_error: Option<String>,
     pub is_testing_query: bool,
+    pub pr_timelines: HashMap<String, Vec<TimelineEvent>>,
 }
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
@@ -162,6 +166,7 @@ where
             query_test_results: None,
             query_test_error: None,
             is_testing_query: false,
+            pr_timelines: HashMap::new(),
         })
     }
 }
@@ -262,7 +267,7 @@ where
         Ok(())
     }
 
-    async fn handle_app_event(&mut self, event: AppEvent) {
+    pub async fn handle_app_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Input(e) => crate::input::handle_event(self, e).await,
             AppEvent::Tick => {
@@ -288,6 +293,32 @@ where
                 }
             }
             AppEvent::TimelineLoaded { repo, pr_number, events } => {
+                if let Some(idx) = self
+                    .pr_list
+                    .items()
+                    .iter()
+                    .position(|p| p.repo == repo && p.number == pr_number)
+                {
+                    let pr_id = self.pr_list.items()[idx].id.clone();
+                    self.pr_timelines.insert(pr_id, events.clone());
+
+                    let pr = &self.pr_list.items()[idx];
+                    let new_attn = attention::evaluate(
+                        Some(&pr.attention_state),
+                        Some(pr),
+                        pr,
+                        &events,
+                        &self.config.current_user,
+                        Utc::now(),
+                        &self.config.attention,
+                    );
+                    self.pr_list.items_mut()[idx].attention_state = new_attn;
+
+                    if self.is_writer {
+                        let _ = self.state_repo.save_state(self.pr_list.items());
+                    }
+                }
+
                 if let Some(selected) = self.pr_list.selected_pr()
                     && selected.repo == repo
                     && selected.number == pr_number
@@ -357,11 +388,13 @@ where
                 let seen_unresolved = old_pr.last_seen_unresolved_count;
                 let seen_total = old_pr.last_seen_total_resolvable_count;
                 let seen_conv = old_pr.last_seen_conversational_count;
+                let attn = old_pr.attention_state.clone();
                 *old_pr = new_pr.clone();
                 old_pr.last_seen_at = last_seen;
                 old_pr.last_seen_unresolved_count = seen_unresolved;
                 old_pr.last_seen_total_resolvable_count = seen_total;
                 old_pr.last_seen_conversational_count = seen_conv;
+                old_pr.attention_state = attn;
             }
         } else {
             let mut current_prs = self.pr_list.items().to_vec();
@@ -378,6 +411,17 @@ where
                         if !self.is_first_sync {
                             self.notifier.notify_pr_update(old_pr, &new_pr);
                         }
+                        let timeline: &[TimelineEvent] =
+                            self.pr_timelines.get(&new_pr.id).map_or(&[], Vec::as_slice);
+                        let new_attn = attention::evaluate(
+                            Some(&old_pr.attention_state),
+                            Some(old_pr),
+                            &new_pr,
+                            timeline,
+                            &self.config.current_user,
+                            Utc::now(),
+                            &self.config.attention,
+                        );
                         let last_seen = old_pr.last_seen_at.clone();
                         let seen_unresolved = old_pr.last_seen_unresolved_count;
                         let seen_total = old_pr.last_seen_total_resolvable_count;
@@ -387,13 +431,25 @@ where
                         old_pr.last_seen_unresolved_count = seen_unresolved;
                         old_pr.last_seen_total_resolvable_count = seen_total;
                         old_pr.last_seen_conversational_count = seen_conv;
+                        old_pr.attention_state = new_attn;
                         self.trigger_details_fetch().await;
                     }
                 } else {
+                    let new_attn = attention::evaluate(
+                        None,
+                        None,
+                        &new_pr,
+                        &[],
+                        &self.config.current_user,
+                        Utc::now(),
+                        &self.config.attention,
+                    );
                     if !self.is_first_sync {
                         self.notifier.notify_new_pr(&new_pr);
                     }
-                    current_prs.push(new_pr);
+                    let mut pr = new_pr;
+                    pr.attention_state = new_attn;
+                    current_prs.push(pr);
                     self.trigger_details_fetch().await;
                 }
             }
@@ -641,6 +697,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         }
     }
 

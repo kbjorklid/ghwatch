@@ -436,23 +436,27 @@ where
             app.pr_list.set_selected_index(app.pr_list.items().len().saturating_sub(1));
         }
         KeyCode::Char('m') if app.is_writer => {
+            let now = chrono::Utc::now();
             let mut prs = app.pr_list.items().to_vec();
             if let Some(pr) = prs.get_mut(app.pr_list.selected_index()) {
                 pr.last_seen_at = Some(pr.updated_at.clone());
                 pr.last_seen_unresolved_count = pr.unresolved_count;
                 pr.last_seen_total_resolvable_count = pr.total_resolvable_count;
                 pr.last_seen_conversational_count = pr.conversational_count;
+                crate::domain::attention::apply_mark_seen(&mut pr.attention_state, now);
                 app.pr_list.set_prs(prs);
                 let _ = app.state_repo.save_state(app.pr_list.items());
             }
         }
         KeyCode::Char('M') if app.is_writer => {
+            let now = chrono::Utc::now();
             let mut prs = app.pr_list.items().to_vec();
             for pr in &mut prs {
                 pr.last_seen_at = Some(pr.updated_at.clone());
                 pr.last_seen_unresolved_count = pr.unresolved_count;
                 pr.last_seen_total_resolvable_count = pr.total_resolvable_count;
                 pr.last_seen_conversational_count = pr.conversational_count;
+                crate::domain::attention::apply_mark_seen(&mut pr.attention_state, now);
             }
             app.pr_list.set_prs(prs);
             let _ = app.state_repo.save_state(app.pr_list.items());
@@ -460,7 +464,8 @@ where
         KeyCode::Char('u')
             if app.is_writer && app.pr_list.selected_index() < app.pr_list.items().len() =>
         {
-            if let Some(pr) = app.pr_list.remove_selected() {
+            if let Some(mut pr) = app.pr_list.remove_selected() {
+                crate::domain::attention::apply_archive(&mut pr.attention_state);
                 app.archive_list.insert_at_front(pr.clone());
                 let _ = app.state_repo.archive_pr(pr);
                 let _ = app.state_repo.save_state(app.pr_list.items());
@@ -507,6 +512,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         }
     }
 

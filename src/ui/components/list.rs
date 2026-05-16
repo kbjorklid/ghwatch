@@ -271,6 +271,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         };
         let config = AppConfig {
             current_user: "me".to_string(),
@@ -334,6 +335,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         };
         let config = AppConfig {
             current_user: "me".to_string(),
@@ -381,6 +383,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         };
         let config = AppConfig::default();
         let theme = Theme::dark();
@@ -425,6 +428,7 @@ mod tests {
             last_seen_unresolved_count: 1,
             last_seen_total_resolvable_count: 1,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         };
         // Note: unresolved_new = total_resolvable - last_seen_total = 3 - 1 = 2
         // unresolved_old = unresolved_total - unresolved_new = 3 - 2 = 1

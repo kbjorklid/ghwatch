@@ -63,6 +63,7 @@ fn create_test_pr(id: &str, number: u32) -> PullRequest {
         last_seen_unresolved_count: 0,
         last_seen_total_resolvable_count: 0,
         last_seen_conversational_count: 0,
+        attention_state: Default::default(),
     }
 }
 
@@ -462,6 +463,220 @@ async fn test_detail_fetching_on_navigation() {
 
     // Wait a bit for tokio::spawn tasks to finish
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn test_attention_ci_failed_fires_on_transition() {
+    // CI transitions from Passing to Failing → CiFailed reason should be added
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.author = "testuser".to_string();
+    pr1.ci_status = CIStatus::Passing;
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-attn-ci-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+    app.config.current_user = "testuser".to_string();
+
+    // Poll arrives: same PR but CI now failing
+    let mut pr1_failing = pr1.clone();
+    pr1_failing.ci_status = CIStatus::Failing;
+    pr1_failing.updated_at = "2024-05-01T11:00:00Z".to_string();
+
+    app.is_first_sync = false;
+    app.merge_prs(vec![pr1_failing], false).await;
+
+    use ghwatch::domain::attention::TriggerReason;
+    let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
+    assert!(
+        pr.attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "CiFailed should be in active_reasons after CI transitions to Failing"
+    );
+}
+
+#[tokio::test]
+async fn test_attention_mentioned_fires_on_timeline_loaded() {
+    // PR arrives, then timeline loads with a comment mentioning @testuser → Mentioned fires
+    use ghwatch::domain::attention::TriggerReason;
+    use ghwatch::ui::events::AppEvent;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.author = "otheruser".to_string();
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-attn-mention-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+    app.config.current_user = "testuser".to_string();
+
+    // Timeline arrives with a comment mentioning @testuser
+    let events = vec![TimelineEvent {
+        id: "evt1".to_string(),
+        event_type: "IssueComment".to_string(),
+        actor: "otheruser".to_string(),
+        created_at: "2024-05-01T12:00:00Z".to_string(),
+        content: Some("Hey @testuser please review".to_string()),
+        reviewer_login: None,
+    }];
+
+    let event =
+        AppEvent::TimelineLoaded { repo: "org/repo".to_string(), pr_number: 1, events };
+    app.handle_app_event(event).await;
+
+    let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
+    assert!(
+        pr.attention_state.active_reasons.contains(&TriggerReason::Mentioned),
+        "Mentioned should be in active_reasons after timeline mentions @testuser"
+    );
+}
+
+#[tokio::test]
+async fn test_attention_mark_seen_clears_active_reasons() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    // Pre-seed an active reason
+    pr1.attention_state = AttentionState {
+        active_reasons: [TriggerReason::CiFailed].into_iter().collect(),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-attn-markseen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "CiFailed should be active before mark-as-seen"
+    );
+
+    let key_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_m).await;
+
+    let pr = &app.pr_list.items()[0];
+    assert!(
+        pr.attention_state.active_reasons.is_empty(),
+        "active_reasons should be empty after mark-as-seen"
+    );
+    assert!(pr.attention_state.last_seen_at.is_some(), "last_seen_at should be set");
+}
+
+#[tokio::test]
+async fn test_attention_archive_clears_active_reasons() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.attention_state = AttentionState {
+        active_reasons: [TriggerReason::ReviewRequested].into_iter().collect(),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_archive_pr().returning(|_| Ok(()));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-attn-archive-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    assert!(
+        app.pr_list.items()[0]
+            .attention_state
+            .active_reasons
+            .contains(&TriggerReason::ReviewRequested),
+        "ReviewRequested should be active before archive"
+    );
+
+    // Press 'u' to archive
+    let key_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_u).await;
+
+    // PR should now be in archive_list with cleared attention state
+    assert_eq!(app.pr_list.items().len(), 0, "PR should be removed from active list");
+    let archived = &app.archive_list.items()[0];
+    assert!(
+        archived.attention_state.active_reasons.is_empty(),
+        "active_reasons should be empty after archiving"
+    );
+}
+
+#[tokio::test]
+async fn test_attention_state_field_exists_and_defaults() {
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let pr1 = create_test_pr("1", 1);
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-attn-field-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    let pr = &app.pr_list.items()[0];
+    assert!(pr.attention_state.active_reasons.is_empty());
+    assert!(pr.attention_state.last_seen_at.is_none());
 }
 
 #[tokio::test]

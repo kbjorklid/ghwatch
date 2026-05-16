@@ -1,3 +1,4 @@
+use crate::domain::attention::AttentionState;
 use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus, Reviewer};
 use serde::Deserialize;
 
@@ -140,6 +141,7 @@ impl From<RawPullRequest> for PullRequest {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: AttentionState::default(),
         }
     }
 }

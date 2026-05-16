@@ -150,7 +150,7 @@ First appearance is when `prev_state.is_none()`. Retroactive firing logic is a b
 - 100% unit-tested; no storage, no UI
 
 ### Phase 2 — Wiring + persistence
-- [ ] Done
+- [x] Done
 
 - Persist `AttentionState` in `state.toml` per PR
 - Wire `evaluate()` into `merge_prs()`

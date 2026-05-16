@@ -1,3 +1,4 @@
+use crate::domain::attention::AttentionConfig;
 use serde::{Deserialize, Serialize};
 
 pub mod watcher;
@@ -36,6 +37,8 @@ pub struct AppConfig {
     pub theme: String,
     #[serde(default = "default_columns")]
     pub visible_columns: Vec<Column>,
+    #[serde(default)]
+    pub attention: AttentionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +89,7 @@ impl Default for AppConfig {
             group_by: GroupMode::None,
             theme: "dark".to_string(),
             visible_columns: default_columns(),
+            attention: AttentionConfig::default(),
         }
     }
 }

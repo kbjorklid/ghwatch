@@ -1,6 +1,8 @@
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::attention::AttentionState;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {
     pub id: String,
@@ -29,6 +31,8 @@ pub struct PullRequest {
     pub last_seen_unresolved_count: u32,
     pub last_seen_total_resolvable_count: u32,
     pub last_seen_conversational_count: u32,
+    #[serde(default)]
+    pub attention_state: AttentionState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +129,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         };
 
         assert_eq!(pr.number, 42);

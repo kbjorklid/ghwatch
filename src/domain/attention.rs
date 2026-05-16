@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus, TimelineEvent};
+use crate::domain::pr::{
+    CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus, TimelineEvent,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TriggerReason {
@@ -24,7 +26,7 @@ pub enum DotColor {
     Blue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttentionConfig {
     pub quiet_period_mins: u64,
     pub disabled_reasons: HashSet<TriggerReason>,
@@ -32,14 +34,11 @@ pub struct AttentionConfig {
 
 impl Default for AttentionConfig {
     fn default() -> Self {
-        Self {
-            quiet_period_mins: 15,
-            disabled_reasons: HashSet::new(),
-        }
+        Self { quiet_period_mins: 15, disabled_reasons: HashSet::new() }
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionState {
     #[serde(default)]
     pub active_reasons: HashSet<TriggerReason>,
@@ -101,9 +100,7 @@ pub fn apply_user_activity(state: &mut AttentionState) {
 }
 
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&Utc))
 }
 
 fn is_comment_event(e: &TimelineEvent) -> bool {
@@ -111,11 +108,7 @@ fn is_comment_event(e: &TimelineEvent) -> bool {
 }
 
 fn latest_comment_at(timeline: &[TimelineEvent]) -> Option<DateTime<Utc>> {
-    timeline
-        .iter()
-        .filter(|e| is_comment_event(e))
-        .filter_map(|e| parse_ts(&e.created_at))
-        .max()
+    timeline.iter().filter(|e| is_comment_event(e)).filter_map(|e| parse_ts(&e.created_at)).max()
 }
 
 fn is_newer_than(e: &TimelineEvent, baseline: Option<DateTime<Utc>>) -> bool {
@@ -163,10 +156,7 @@ pub fn evaluate(
     }
 
     // No reviewer has CHANGES_REQUESTED → remove ChangesRequested
-    let has_cr_reviewer = new_pr
-        .reviewers
-        .iter()
-        .any(|r| r.status == "CHANGES_REQUESTED");
+    let has_cr_reviewer = new_pr.reviewers.iter().any(|r| r.status == "CHANGES_REQUESTED");
     if !has_cr_reviewer {
         state.active_reasons.remove(&TriggerReason::ChangesRequested);
     }
@@ -186,7 +176,10 @@ pub fn evaluate(
         let was_requested = pp.requested_reviewers.iter().any(|r| r == current_user);
         let is_requested = new_pr.requested_reviewers.iter().any(|r| r == current_user);
         if was_requested && !is_requested {
-            state.remove_reasons(&[TriggerReason::ReviewRequested, TriggerReason::ReReviewRequested]);
+            state.remove_reasons(&[
+                TriggerReason::ReviewRequested,
+                TriggerReason::ReReviewRequested,
+            ]);
         }
     }
 
@@ -212,7 +205,8 @@ pub fn evaluate(
 
         // MergeConflict: transition to Conflicting
         if new_pr.mergeable == MergeableStatus::Conflicting {
-            let was_conflicting = prev_pr.is_some_and(|p| p.mergeable == MergeableStatus::Conflicting);
+            let was_conflicting =
+                prev_pr.is_some_and(|p| p.mergeable == MergeableStatus::Conflicting);
             if is_first || !was_conflicting {
                 to_add.push(TriggerReason::MergeConflict);
             }
@@ -237,10 +231,8 @@ pub fn evaluate(
         }
 
         // NewComments: new comments on own PR with quiet period (retroactive on first appearance)
-        let comment_events: Vec<&TimelineEvent> = timeline
-            .iter()
-            .filter(|e| is_comment_event(e))
-            .collect();
+        let comment_events: Vec<&TimelineEvent> =
+            timeline.iter().filter(|e| is_comment_event(e)).collect();
         if !comment_events.is_empty() {
             if is_first {
                 to_add.push(TriggerReason::NewComments);
@@ -264,18 +256,16 @@ pub fn evaluate(
 
     if !is_own_pr {
         // ReviewRequested: user added to requested_reviewers
-        let was_requested = prev_pr.is_some_and(|p| {
-            p.requested_reviewers.iter().any(|r| r == current_user)
-        });
+        let was_requested =
+            prev_pr.is_some_and(|p| p.requested_reviewers.iter().any(|r| r == current_user));
         let is_requested = new_pr.requested_reviewers.iter().any(|r| r == current_user);
         if is_requested && (is_first || !was_requested) {
             to_add.push(TriggerReason::ReviewRequested);
         }
 
         // ReReviewRequested: ReviewRequestedEvent targeting user after user's prior review
-        let user_has_prior_review = timeline
-            .iter()
-            .any(|e| e.event_type == "PullRequestReview" && e.actor == current_user);
+        let user_has_prior_review =
+            timeline.iter().any(|e| e.event_type == "PullRequestReview" && e.actor == current_user);
         if user_has_prior_review {
             let re_requested = timeline.iter().any(|e| {
                 e.event_type == "ReviewRequestedEvent"
@@ -292,9 +282,7 @@ pub fn evaluate(
         let mentioned = timeline.iter().any(|e| {
             is_comment_event(e)
                 && e.actor != current_user
-                && e.content
-                    .as_ref()
-                    .is_some_and(|c| c.contains(&mention_pattern))
+                && e.content.as_ref().is_some_and(|c| c.contains(&mention_pattern))
                 && (is_first || is_newer_than(e, last_seen))
         });
         if mentioned {
@@ -302,9 +290,8 @@ pub fn evaluate(
         }
 
         // CommentReply: someone else commented on PR where user has commented, discussion quiet
-        let user_has_commented = timeline
-            .iter()
-            .any(|e| is_comment_event(e) && e.actor == current_user);
+        let user_has_commented =
+            timeline.iter().any(|e| is_comment_event(e) && e.actor == current_user);
         if user_has_commented {
             let has_other_new = timeline.iter().any(|e| {
                 is_comment_event(e)
@@ -352,7 +339,7 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pr::{Reviewer};
+    use crate::domain::pr::Reviewer;
 
     fn make_pr(author: &str) -> PullRequest {
         PullRequest {
@@ -382,6 +369,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
+            attention_state: Default::default(),
         }
     }
 
@@ -419,16 +407,11 @@ mod tests {
     }
 
     fn make_reviewer(login: &str, status: &str) -> Reviewer {
-        Reviewer {
-            login: login.to_string(),
-            status: status.to_string(),
-        }
+        Reviewer { login: login.to_string(), status: status.to_string() }
     }
 
     fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2024-01-02T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc)
+        DateTime::parse_from_rfc3339("2024-01-02T12:00:00Z").unwrap().with_timezone(&Utc)
     }
 
     // --- Cycle 1: AttentionState methods ---
@@ -535,7 +518,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::CiFailed]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         // Still in set (not re-fired, just preserved)
         assert!(s.active_reasons.contains(&TriggerReason::CiFailed));
     }
@@ -576,7 +567,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::ChangesRequested));
     }
 
@@ -607,7 +606,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::MergeConflict]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::MergeConflict));
     }
 
@@ -650,7 +657,15 @@ mod tests {
         let mut prev = make_pr("me");
         prev.reviewers = vec![make_reviewer("bob", "APPROVED")]; // already approved
         let prev_state = AttentionState::default();
-        let s = evaluate(Some(&prev_state), Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::Approved));
     }
 
@@ -691,7 +706,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::ReviewRequested));
     }
 
@@ -769,7 +792,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &timeline, "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &timeline,
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::ReReviewRequested));
         assert!(!s.active_reasons.contains(&TriggerReason::ReviewRequested));
     }
@@ -808,14 +839,23 @@ mod tests {
             last_seen_at: parse_ts("2024-01-01T12:00:00Z"), // seen after comment
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::Mentioned));
     }
 
     #[test]
     fn test_mentioned_fires_for_bot_comment() {
         let pr = make_pr("alice");
-        let comment = make_comment("github-actions[bot]", "2024-01-02T01:00:00Z", "Paging @me for review");
+        let comment =
+            make_comment("github-actions[bot]", "2024-01-02T01:00:00Z", "Paging @me for review");
         let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
         assert!(s.active_reasons.contains(&TriggerReason::Mentioned));
     }
@@ -834,7 +874,15 @@ mod tests {
             ..Default::default()
         };
         // now() = 12:00, last comment at 11:40, diff = 20 min > 15 min quiet period
-        let s = evaluate(Some(&prev_state), None, &pr, &[user_comment, other_comment], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::CommentReply));
     }
 
@@ -844,11 +892,17 @@ mod tests {
         let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
         // 5 min ago — within quiet period
         let other_comment = make_comment("bob", "2024-01-02T11:55:00Z", "Please fix this");
-        let prev_state = AttentionState {
-            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
-            ..Default::default()
-        };
-        let s = evaluate(Some(&prev_state), None, &pr, &[user_comment, other_comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::CommentReply));
     }
 
@@ -857,11 +911,17 @@ mod tests {
         let pr = make_pr("me"); // own PR
         let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
         let other_comment = make_comment("bob", "2024-01-02T11:40:00Z", "Looks good");
-        let prev_state = AttentionState {
-            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
-            ..Default::default()
-        };
-        let s = evaluate(Some(&prev_state), None, &pr, &[user_comment, other_comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::CommentReply));
     }
 
@@ -872,7 +932,15 @@ mod tests {
         let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
         let other_comment = make_comment("bob", "2024-01-02T11:55:00Z", "Changes needed"); // 5 min ago
         // No prev_state: first appearance
-        let s = evaluate(None, None, &pr, &[user_comment, other_comment], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            None,
+            None,
+            &pr,
+            &[user_comment, other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::CommentReply));
     }
 
@@ -885,7 +953,15 @@ mod tests {
             last_seen_at: parse_ts("2024-01-02T11:00:00Z"), // seen before comment
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::NewComments));
     }
 
@@ -894,11 +970,17 @@ mod tests {
         let mut pr = make_pr("me");
         pr.comment_count = 1;
         let comment = make_comment("bob", "2024-01-02T11:55:00Z", "Please fix"); // 5 min ago
-        let prev_state = AttentionState {
-            last_seen_at: parse_ts("2024-01-02T11:00:00Z"),
-            ..Default::default()
-        };
-        let s = evaluate(Some(&prev_state), None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-02T11:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::NewComments));
     }
 
@@ -907,11 +989,17 @@ mod tests {
         let mut pr = make_pr("alice"); // other's PR
         pr.comment_count = 1;
         let comment = make_comment("bob", "2024-01-02T11:40:00Z", "Looks good");
-        let prev_state = AttentionState {
-            last_seen_at: parse_ts("2024-01-02T11:00:00Z"),
-            ..Default::default()
-        };
-        let s = evaluate(Some(&prev_state), None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-02T11:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::NewComments));
     }
 
@@ -931,10 +1019,14 @@ mod tests {
         let mut pr = make_pr("me");
         pr.status = PRStatus::Closed;
         let prev_state = AttentionState {
-            active_reasons: HashSet::from([TriggerReason::CiFailed, TriggerReason::ChangesRequested]),
+            active_reasons: HashSet::from([
+                TriggerReason::CiFailed,
+                TriggerReason::ChangesRequested,
+            ]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
         assert!(s.active_reasons.is_empty());
     }
 
@@ -946,7 +1038,8 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::Approved]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
         assert!(s.active_reasons.is_empty());
     }
 
@@ -957,7 +1050,8 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::CiFailed, TriggerReason::Approved]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
         assert!(!s.active_reasons.contains(&TriggerReason::CiFailed));
         assert!(s.active_reasons.contains(&TriggerReason::Approved));
     }
@@ -967,10 +1061,14 @@ mod tests {
         let mut pr = make_pr("me");
         pr.reviewers = vec![make_reviewer("bob", "APPROVED")]; // no CHANGES_REQUESTED
         let prev_state = AttentionState {
-            active_reasons: HashSet::from([TriggerReason::ChangesRequested, TriggerReason::Approved]),
+            active_reasons: HashSet::from([
+                TriggerReason::ChangesRequested,
+                TriggerReason::Approved,
+            ]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
         assert!(!s.active_reasons.contains(&TriggerReason::ChangesRequested));
         assert!(s.active_reasons.contains(&TriggerReason::Approved));
     }
@@ -978,15 +1076,14 @@ mod tests {
     #[test]
     fn test_outstanding_changes_requested_reviewer_keeps_reason() {
         let mut pr = make_pr("me");
-        pr.reviewers = vec![
-            make_reviewer("bob", "APPROVED"),
-            make_reviewer("carol", "CHANGES_REQUESTED"),
-        ];
+        pr.reviewers =
+            vec![make_reviewer("bob", "APPROVED"), make_reviewer("carol", "CHANGES_REQUESTED")];
         let prev_state = AttentionState {
             active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
         assert!(s.active_reasons.contains(&TriggerReason::ChangesRequested));
     }
 
@@ -998,7 +1095,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), None, &pr, &[review], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[review],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::ReviewRequested));
     }
 
@@ -1012,7 +1117,15 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
             ..Default::default()
         };
-        let s = evaluate(Some(&prev_state), Some(&prev_pr), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(!s.active_reasons.contains(&TriggerReason::ReviewRequested));
     }
 
@@ -1066,7 +1179,15 @@ mod tests {
     fn test_no_change_no_new_reasons() {
         let pr = make_pr("me"); // Passing CI, Pending review, Mergeable
         let prev_state = AttentionState::default();
-        let s = evaluate(Some(&prev_state), Some(&pr), &pr, &[], "me", now(), &AttentionConfig::default());
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&pr),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.is_empty());
     }
 
@@ -1087,9 +1208,6 @@ mod tests {
         let pr = make_pr("alice");
         let comment = make_comment("bob", "2024-01-02T06:00:00Z", "Nice work");
         let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
-        assert_eq!(
-            s.last_comment_at,
-            parse_ts("2024-01-02T06:00:00Z")
-        );
+        assert_eq!(s.last_comment_at, parse_ts("2024-01-02T06:00:00Z"));
     }
 }
