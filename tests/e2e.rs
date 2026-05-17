@@ -311,15 +311,14 @@ async fn test_app_modes() {
     ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())).await;
     assert_eq!(app.mode, AppMode::Normal);
 
-    // Settings mode
-    ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Char('S'), KeyModifiers::empty()))
-        .await;
+    // Settings mode via Left arrow
+    ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::empty())).await;
     assert_eq!(app.mode, AppMode::Settings);
     ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())).await;
     assert_eq!(app.mode, AppMode::Normal);
 
-    // Archive mode
-    ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Char('A'), KeyModifiers::empty()))
+    // Archive mode via Right arrow
+    ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::empty()))
         .await;
     assert_eq!(app.mode, AppMode::Archive);
 }
@@ -699,9 +698,9 @@ async fn test_delete_from_archive() {
         App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
             .unwrap();
 
-    // Switch to archive mode
-    let key_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::empty());
-    ghwatch::input::handle_key(&mut app, key_a).await;
+    // Switch to archive mode via Right arrow
+    ghwatch::input::handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::empty()))
+        .await;
     assert_eq!(app.mode, AppMode::Archive);
     assert_eq!(app.archive_list.items().len(), 1);
 

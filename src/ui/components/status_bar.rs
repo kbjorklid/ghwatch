@@ -18,12 +18,12 @@ pub fn render_status_bar(
 ) {
     let keys = match mode {
         AppMode::Normal => {
-            "j/k: Nav | Tab: Focus | o: Open | y: Copy URL | s: Sort | f: Follow | /: Filter | m: Mark | u: Unfollow | A: Arch | S: Set | q: Quit"
+            "j/k: Nav | Tab: Focus | o: Open | y: Copy | s: Sort | f: Follow | /: Filter | m: Mark | u: Unfollow | h/l: Tabs | q: Quit"
         }
         AppMode::Search => "Enter: Filter | Esc: Cancel | Backspace: Delete",
         AppMode::Follow => "Enter: Follow | Esc: Cancel",
-        AppMode::Settings => "j/k: Navigate | Enter: Toggle | D: Diag | Esc: Back",
-        AppMode::Archive => "j/k: Navigate | Esc: Back",
+        AppMode::Settings => "j/k: Navigate | Enter: Toggle | h/l: Tabs | D: Diag | Esc: PRs",
+        AppMode::Archive => "j/k: Navigate | h/l: Tabs | d: Delete | Esc: PRs",
         AppMode::Diagnostic => "j/k: Navigate | Enter: View Output | y: Copy Cmd | Esc: Back",
         AppMode::LogDetail => "Esc/Enter: Back",
         AppMode::Help => "Esc/q: Back",

@@ -3,6 +3,7 @@ use crate::domain::pr::PullRequest;
 use crate::ui::components::{
     archive::render_archive, detail::render_detail, diagnostics::render_diagnostics,
     help::render_help, list::render_list, settings::render_settings, status_bar::render_status_bar,
+    tab_bar::render_tab_bar,
 };
 use crate::ui::theme::Theme;
 use anyhow::Result;
@@ -65,6 +66,7 @@ where
             let show_status = ctx.config.show_status_bar;
 
             let constraints = [
+                Constraint::Length(1),
                 Constraint::Min(0),
                 if has_input { Constraint::Length(3) } else { Constraint::Length(0) },
                 if show_status { Constraint::Length(1) } else { Constraint::Length(0) },
@@ -75,25 +77,27 @@ where
                 .constraints(constraints.as_ref())
                 .split(f.area());
 
+            render_tab_bar(f, chunks[0], ctx.mode, &theme);
+
             match ctx.mode {
                 crate::app::AppMode::Settings => {
-                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
                 }
                 crate::app::AppMode::Archive => {
-                    render_archive(f, chunks[0], ctx.prs, ctx.selected_index, &theme);
+                    render_archive(f, chunks[1], ctx.prs, ctx.selected_index, &theme);
                 }
                 crate::app::AppMode::Help => {
-                    render_help(f, chunks[0], &theme);
+                    render_help(f, chunks[1], &theme);
                 }
                 crate::app::AppMode::Diagnostic => {
-                    render_diagnostics(f, chunks[0], ctx.diagnostic_selected_index, &theme);
+                    render_diagnostics(f, chunks[1], ctx.diagnostic_selected_index, &theme);
                 }
                 crate::app::AppMode::LogDetail => {
-                    render_diagnostics(f, chunks[0], ctx.diagnostic_selected_index, &theme);
+                    render_diagnostics(f, chunks[1], ctx.diagnostic_selected_index, &theme);
                     render_log_detail(f, f.area(), ctx.diagnostic_selected_index, &theme);
                 }
                 crate::app::AppMode::AddQueryName | crate::app::AppMode::AddQuerySearch => {
-                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
                     let title = if ctx.mode == &crate::app::AppMode::AddQueryName {
                         " Enter Query Name "
                     } else {
@@ -119,7 +123,7 @@ where
                     f.render_widget(text, modal_area);
                 }
                 crate::app::AppMode::ConfirmQuery => {
-                    render_settings(f, chunks[0], ctx.config, ctx.settings_selected_index, &theme);
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
 
                     let block = Block::default()
                         .borders(Borders::ALL)
@@ -197,7 +201,7 @@ where
                     f.render_widget(paragraph, modal_area);
                 }
                 _ => {
-                    let area = chunks[0];
+                    let area = chunks[1];
                     let direction =
                         if area.width < 120 { Direction::Vertical } else { Direction::Horizontal };
                     let main_chunks = Layout::default()
@@ -240,13 +244,13 @@ where
                 let text = Paragraph::new(format!("{}{}", prompt_label, ctx.input_buffer))
                     .block(block)
                     .style(Style::default().fg(theme.text));
-                f.render_widget(text, chunks[1]);
+                f.render_widget(text, chunks[2]);
             }
 
             if show_status {
                 render_status_bar(
                     f,
-                    chunks[2],
+                    chunks[3],
                     ctx.mode,
                     &theme,
                     ctx.last_refresh,

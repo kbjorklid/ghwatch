@@ -4,6 +4,41 @@ use crate::ui::events::AppEvent;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::Backend;
 
+const fn switch_to_prs<B: Backend>(app: &mut App<B>)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    app.mode = AppMode::Normal;
+}
+
+fn switch_to_archive<B: Backend>(app: &mut App<B>)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    if let Ok(archived) = app.state_repo.load_archive() {
+        app.archive_list.set_prs(archived);
+    }
+    app.archive_list.set_selected_index(0);
+    app.mode = AppMode::Archive;
+}
+
+const fn switch_to_settings<B: Backend>(app: &mut App<B>)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    app.mode = AppMode::Settings;
+}
+
+fn save_config<B: Backend>(app: &App<B>)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let config_dir =
+        crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let config_path = config_dir.join("config.toml");
+    let _ = std::fs::write(config_path, toml::to_string(&app.config).unwrap_or_default());
+}
+
 pub async fn handle_event<B: Backend>(app: &mut App<B>, event: Event)
 where
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -144,9 +179,8 @@ where
         {
             let _ = app.state_repo.save_archive(app.archive_list.items());
         }
-        KeyCode::Esc => {
-            app.mode = AppMode::Normal;
-        }
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => switch_to_prs(app),
+        KeyCode::Right | KeyCode::Char('l') => switch_to_settings(app),
         KeyCode::Char('q') => app.should_quit = true,
         _ => {}
     }
@@ -208,13 +242,13 @@ where
             app.diagnostic_selected_index = 0;
             app.mode = AppMode::Diagnostic;
         }
-        KeyCode::Esc => {
-            app.mode = AppMode::Normal;
-            // Save config on exit
-            let config_dir =
-                crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-            let config_path = config_dir.join("config.toml");
-            let _ = std::fs::write(config_path, toml::to_string(&app.config).unwrap_or_default());
+        KeyCode::Left | KeyCode::Char('h') => {
+            save_config(app);
+            switch_to_archive(app);
+        }
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Esc => {
+            save_config(app);
+            switch_to_prs(app);
         }
         _ => {}
     }
@@ -364,16 +398,8 @@ where
         KeyCode::Char('f') if app.is_writer => {
             app.mode = AppMode::Follow;
         }
-        KeyCode::Char('S') => {
-            app.mode = AppMode::Settings;
-        }
-        KeyCode::Char('A') => {
-            if let Ok(archived) = app.state_repo.load_archive() {
-                app.archive_list.set_prs(archived);
-            }
-            app.archive_list.set_selected_index(0);
-            app.mode = AppMode::Archive;
-        }
+        KeyCode::Left | KeyCode::Char('h') => switch_to_settings(app),
+        KeyCode::Right | KeyCode::Char('l') => switch_to_archive(app),
         KeyCode::Esc => {
             app.mode = AppMode::Normal;
         }
@@ -575,8 +601,10 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
         assert_eq!(app.mode, AppMode::Normal);
 
-        // Settings
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE)).await;
+        // Settings via right arrow
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).await;
+        assert_eq!(app.mode, AppMode::Archive);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).await;
         assert_eq!(app.mode, AppMode::Settings);
     }
 
