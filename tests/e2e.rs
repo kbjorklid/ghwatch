@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ghwatch::app::{App, AppMode};
-use ghwatch::domain::ports::{GithubProvider, StateRepository};
 use ghwatch::domain::attention::AttentionState;
+use ghwatch::domain::ports::{GithubProvider, StateRepository};
 use ghwatch::domain::pr::{
     CIStatus, CheckRun, MergeableStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus,
     TimelineEvent,

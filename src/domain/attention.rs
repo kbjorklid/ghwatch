@@ -479,13 +479,19 @@ mod tests {
 
     #[test]
     fn test_is_blue_updated_after_seen() {
-        let state = AttentionState { last_seen_at: parse_ts("2024-01-01T10:00:00Z"), ..AttentionState::default() };
+        let state = AttentionState {
+            last_seen_at: parse_ts("2024-01-01T10:00:00Z"),
+            ..AttentionState::default()
+        };
         assert!(state.is_blue("2024-01-02T00:00:00Z")); // updated after seen
     }
 
     #[test]
     fn test_is_blue_seen_after_update() {
-        let state = AttentionState { last_seen_at: parse_ts("2024-01-03T00:00:00Z"), ..AttentionState::default() };
+        let state = AttentionState {
+            last_seen_at: parse_ts("2024-01-03T00:00:00Z"),
+            ..AttentionState::default()
+        };
         assert!(!state.is_blue("2024-01-02T00:00:00Z")); // seen after update
     }
 
@@ -498,7 +504,10 @@ mod tests {
 
     #[test]
     fn test_dot_color_none() {
-        let state = AttentionState { last_seen_at: parse_ts("2024-01-03T00:00:00Z"), ..AttentionState::default() };
+        let state = AttentionState {
+            last_seen_at: parse_ts("2024-01-03T00:00:00Z"),
+            ..AttentionState::default()
+        };
         assert_eq!(state.dot_color("2024-01-02T00:00:00Z"), None);
     }
 
