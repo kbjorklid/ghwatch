@@ -8,6 +8,45 @@ use tokio::process::Command;
 
 use crate::github::rate_limit::RateLimitTracker;
 
+pub(crate) fn map_timeline_event(r: RawTimelineEvent) -> TimelineEvent {
+    let event_type = match r.typename.as_str() {
+        "commented" => "IssueComment",
+        "reviewed" => "PullRequestReview",
+        "committed" => "Commit",
+        "merged" => "MergedEvent",
+        "closed" => "ClosedEvent",
+        "reopened" => "ReopenedEvent",
+        "labeled" => "LabeledEvent",
+        "unlabeled" => "UnlabeledEvent",
+        other => other,
+    };
+
+    let content = match event_type {
+        "IssueComment" => r.body.clone(),
+        "PullRequestReview" => {
+            let state = r.state.clone().unwrap_or_else(|| "COMMENTED".to_string()).to_uppercase();
+            let body = r.body.as_ref().map(|b| format!(": {b}")).unwrap_or_default();
+            Some(format!("{state}{body}"))
+        }
+        "MergedEvent" => Some("merged this pull request".to_string()),
+        "ClosedEvent" => Some("closed this pull request".to_string()),
+        "ReopenedEvent" => Some("reopened this pull request".to_string()),
+        "LabeledEvent" => r.label.as_ref().map(|l| format!("added label: {}", l.name)),
+        "UnlabeledEvent" => r.label.as_ref().map(|l| format!("removed label: {}", l.name)),
+        "Commit" => r.message.clone(),
+        _ => None,
+    };
+
+    TimelineEvent {
+        id: r.node_id.unwrap_or_default(),
+        event_type: event_type.to_string(),
+        actor: r.actor.map_or_else(|| "unknown".to_string(), |a| a.login),
+        created_at: r.created_at.unwrap_or_default(),
+        content,
+        reviewer_login: None,
+    }
+}
+
 #[derive(Debug)]
 pub struct GhCliClient {
     pub rate_limit: RateLimitTracker,
@@ -354,38 +393,7 @@ impl GithubProvider for GhCliClient {
 
         let raws: Vec<RawTimelineEvent> = serde_json::from_str(&output)?;
 
-        Ok(raws
-            .into_iter()
-            .map(|r| {
-                let content = match r.typename.as_str() {
-                    "IssueComment" => r.body.clone(),
-                    "PullRequestReview" => {
-                        let state = r.state.clone().unwrap_or_else(|| "COMMENTED".to_string());
-                        let body = r.body.as_ref().map(|b| format!(": {b}")).unwrap_or_default();
-                        Some(format!("{state}{body}"))
-                    }
-                    "PullRequestReviewThread" => Some("started a review thread".to_string()),
-                    "MergedEvent" => Some("merged this pull request".to_string()),
-                    "ClosedEvent" => Some("closed this pull request".to_string()),
-                    "ReopenedEvent" => Some("reopened this pull request".to_string()),
-                    "LabeledEvent" => r.label.as_ref().map(|l| format!("added label: {}", l.name)),
-                    "UnlabeledEvent" => {
-                        r.label.as_ref().map(|l| format!("removed label: {}", l.name))
-                    }
-                    "Commit" => r.message.clone(),
-                    _ => None,
-                };
-
-                TimelineEvent {
-                    id: r.id.unwrap_or_default(),
-                    event_type: r.typename,
-                    actor: r.actor.map_or_else(|| "unknown".to_string(), |a| a.login),
-                    created_at: r.created_at.unwrap_or_default(),
-                    content,
-                    reviewer_login: None,
-                }
-            })
-            .collect())
+        Ok(raws.into_iter().map(map_timeline_event).collect())
     }
 
     async fn fetch_rate_limit(&self) -> Result<crate::domain::pr::RateLimitStatus> {
@@ -578,5 +586,116 @@ mod tests {
         assert_eq!(pr.author, "kbjorklid");
         assert_eq!(pr.repo, "kbjorklid/gh-notify-test");
         assert_eq!(pr.status, crate::domain::pr::PRStatus::Open);
+    }
+
+    fn make_raw(event: &str) -> RawTimelineEvent {
+        RawTimelineEvent {
+            node_id: Some(format!("NODE_{event}")),
+            typename: event.to_string(),
+            actor: Some(crate::github::models::RawAuthor { login: "alice".to_string() }),
+            created_at: Some("2024-01-01T10:00:00Z".to_string()),
+            body: None,
+            state: None,
+            message: None,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn test_map_timeline_event_commented_maps_to_issue_comment() {
+        let mut raw = make_raw("commented");
+        raw.body = Some("LGTM".to_string());
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "IssueComment");
+        assert_eq!(ev.content.as_deref(), Some("LGTM"));
+        assert_eq!(ev.actor, "alice");
+        assert_eq!(ev.id, "NODE_commented");
+        assert_eq!(ev.created_at, "2024-01-01T10:00:00Z");
+    }
+
+    #[test]
+    fn test_map_timeline_event_reviewed_maps_to_pull_request_review() {
+        let mut raw = make_raw("reviewed");
+        raw.state = Some("approved".to_string());
+        raw.body = Some("Nice work".to_string());
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "PullRequestReview");
+        assert_eq!(ev.content.as_deref(), Some("APPROVED: Nice work"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_reviewed_no_body() {
+        let mut raw = make_raw("reviewed");
+        raw.state = Some("commented".to_string());
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "PullRequestReview");
+        assert_eq!(ev.content.as_deref(), Some("COMMENTED"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_reviewed_state_uppercased() {
+        let mut raw = make_raw("reviewed");
+        raw.state = Some("changes_requested".to_string());
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.content.as_deref(), Some("CHANGES_REQUESTED"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_committed_maps_to_commit() {
+        let mut raw = make_raw("committed");
+        raw.actor = None;
+        raw.created_at = None;
+        raw.message = Some("Fix the bug".to_string());
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "Commit");
+        assert_eq!(ev.content.as_deref(), Some("Fix the bug"));
+        assert_eq!(ev.actor, "unknown");
+        assert_eq!(ev.created_at, "");
+    }
+
+    #[test]
+    fn test_map_timeline_event_merged() {
+        let ev = super::map_timeline_event(make_raw("merged"));
+        assert_eq!(ev.event_type, "MergedEvent");
+        assert_eq!(ev.content.as_deref(), Some("merged this pull request"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_closed() {
+        let ev = super::map_timeline_event(make_raw("closed"));
+        assert_eq!(ev.event_type, "ClosedEvent");
+        assert_eq!(ev.content.as_deref(), Some("closed this pull request"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_reopened() {
+        let ev = super::map_timeline_event(make_raw("reopened"));
+        assert_eq!(ev.event_type, "ReopenedEvent");
+        assert_eq!(ev.content.as_deref(), Some("reopened this pull request"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_labeled() {
+        let mut raw = make_raw("labeled");
+        raw.label = Some(crate::github::models::RawLabel { name: "bug".to_string() });
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "LabeledEvent");
+        assert_eq!(ev.content.as_deref(), Some("added label: bug"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_unlabeled() {
+        let mut raw = make_raw("unlabeled");
+        raw.label = Some(crate::github::models::RawLabel { name: "wip".to_string() });
+        let ev = super::map_timeline_event(raw);
+        assert_eq!(ev.event_type, "UnlabeledEvent");
+        assert_eq!(ev.content.as_deref(), Some("removed label: wip"));
+    }
+
+    #[test]
+    fn test_map_timeline_event_unknown_passes_through() {
+        let ev = super::map_timeline_event(make_raw("review_requested"));
+        assert_eq!(ev.event_type, "review_requested");
+        assert!(ev.content.is_none());
     }
 }
