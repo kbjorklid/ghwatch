@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ghwatch::app::{App, AppMode};
 use ghwatch::domain::ports::{GithubProvider, StateRepository};
+use ghwatch::domain::attention::AttentionState;
 use ghwatch::domain::pr::{
     CIStatus, CheckRun, MergeableStatus, PRStatus, PullRequest, RateLimitStatus, ReviewStatus,
     TimelineEvent,
@@ -64,7 +65,7 @@ fn create_test_pr(id: &str, number: u32) -> PullRequest {
         last_seen_unresolved_count: 0,
         last_seen_total_resolvable_count: 0,
         last_seen_conversational_count: 0,
-        attention_state: Default::default(),
+        attention_state: AttentionState::default(),
     }
 }
 
@@ -565,7 +566,7 @@ async fn test_attention_mark_seen_clears_active_reasons() {
     let mut pr1 = create_test_pr("1", 1);
     // Pre-seed an active reason
     pr1.attention_state = AttentionState {
-        active_reasons: [TriggerReason::CiFailed].into_iter().collect(),
+        active_reasons: std::iter::once(TriggerReason::CiFailed).collect(),
         last_seen_at: None,
         last_comment_at: None,
     };
@@ -610,7 +611,7 @@ async fn test_attention_archive_clears_active_reasons() {
 
     let mut pr1 = create_test_pr("1", 1);
     pr1.attention_state = AttentionState {
-        active_reasons: [TriggerReason::ReviewRequested].into_iter().collect(),
+        active_reasons: std::iter::once(TriggerReason::ReviewRequested).collect(),
         last_seen_at: None,
         last_comment_at: None,
     };
@@ -658,7 +659,7 @@ async fn test_attention_state_field_exists_and_defaults() {
     let mut state_repo = MockStateRepository::new();
 
     let pr1 = create_test_pr("1", 1);
-    let prs = vec![pr1.clone()];
+    let prs = vec![pr1];
 
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
@@ -983,7 +984,7 @@ async fn test_active_reasons_survive_restart() {
         last_seen_at: None,
         last_comment_at: None,
     };
-    let prs = vec![pr1.clone()];
+    let prs = vec![pr1];
 
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
@@ -1013,6 +1014,7 @@ async fn test_active_reasons_survive_restart() {
 async fn test_last_seen_at_survives_restart() {
     use chrono::DateTime;
     use ghwatch::domain::attention::AttentionState;
+    use std::collections::HashSet;
 
     let github = MockGithubProvider::new();
     let mut state_repo = MockStateRepository::new();
@@ -1020,11 +1022,11 @@ async fn test_last_seen_at_survives_restart() {
     let seen_time: DateTime<chrono::Utc> = "2024-05-01T10:30:00Z".parse().unwrap();
     let mut pr1 = create_test_pr("1", 1);
     pr1.attention_state = AttentionState {
-        active_reasons: Default::default(),
+        active_reasons: HashSet::default(),
         last_seen_at: Some(seen_time),
         last_comment_at: None,
     };
-    let prs = vec![pr1.clone()];
+    let prs = vec![pr1];
 
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
@@ -1051,6 +1053,7 @@ async fn test_last_seen_at_survives_restart() {
 async fn test_last_comment_at_survives_restart() {
     use chrono::DateTime;
     use ghwatch::domain::attention::AttentionState;
+    use std::collections::HashSet;
 
     let github = MockGithubProvider::new();
     let mut state_repo = MockStateRepository::new();
@@ -1058,11 +1061,11 @@ async fn test_last_comment_at_survives_restart() {
     let comment_time: DateTime<chrono::Utc> = "2024-05-01T10:45:00Z".parse().unwrap();
     let mut pr1 = create_test_pr("1", 1);
     pr1.attention_state = AttentionState {
-        active_reasons: Default::default(),
+        active_reasons: HashSet::default(),
         last_seen_at: None,
         last_comment_at: Some(comment_time),
     };
-    let prs = vec![pr1.clone()];
+    let prs = vec![pr1];
 
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));

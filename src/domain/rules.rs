@@ -18,6 +18,7 @@ pub fn needs_attention(pr: &PullRequest, current_user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::attention::AttentionState;
     use crate::domain::pr::{MergeableStatus, PRStatus};
 
     fn create_test_pr() -> PullRequest {
@@ -49,7 +50,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         }
     }
 

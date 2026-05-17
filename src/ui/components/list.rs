@@ -239,7 +239,7 @@ fn render_pr_item(
 mod tests {
     use super::*;
     use crate::config::{AppConfig, Column};
-    use crate::domain::attention::TriggerReason;
+    use crate::domain::attention::{AttentionState, TriggerReason};
     use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use crate::ui::theme::Theme;
     use std::collections::HashSet;
@@ -274,7 +274,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         let config = AppConfig {
             current_user: "me".to_string(),
@@ -339,7 +339,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         let config = AppConfig {
             current_user: "me".to_string(),
@@ -388,7 +388,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         let config = AppConfig::default();
         let theme = Theme::dark();
@@ -434,7 +434,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         pr.attention_state.active_reasons = HashSet::from([TriggerReason::CiFailed]);
 
@@ -483,7 +483,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         // attention_state seen after updated_at → no dot
         pr.attention_state.last_seen_at = Some(
@@ -535,7 +535,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
 
         let config = AppConfig {
@@ -585,7 +585,7 @@ mod tests {
             last_seen_unresolved_count: 1,
             last_seen_total_resolvable_count: 1,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
         // Note: unresolved_new = total_resolvable - last_seen_total = 3 - 1 = 2
         // unresolved_old = unresolved_total - unresolved_new = 3 - 2 = 1
@@ -649,20 +649,20 @@ mod tests {
 
         // No dot (no active reasons)
         let pr_no_dot = make_pr(HashSet::new());
-        let lines = render_pr_item(&pr_no_dot, false, &config, &theme, &icons, 100);
-        let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let rendered = render_pr_item(&pr_no_dot, false, &config, &theme, &icons, 100);
+        let row2: String = rendered[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            line2.contains("2/2") && line2.contains("3"),
-            "Comment counts should appear when there is no dot. Got: {line2}"
+            row2.contains("2/2") && row2.contains('3'),
+            "Comment counts should appear when there is no dot. Got: {row2}"
         );
 
         // Red dot (active reasons)
         let pr_red_dot = make_pr(HashSet::from([TriggerReason::CiFailed]));
-        let lines = render_pr_item(&pr_red_dot, false, &config, &theme, &icons, 100);
-        let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let rendered = render_pr_item(&pr_red_dot, false, &config, &theme, &icons, 100);
+        let row2: String = rendered[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            line2.contains("2/2") && line2.contains("3"),
-            "Comment counts should appear when there is a red dot. Got: {line2}"
+            row2.contains("2/2") && row2.contains('3'),
+            "Comment counts should appear when there is a red dot. Got: {row2}"
         );
     }
 }

@@ -607,6 +607,7 @@ where
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::domain::attention::AttentionState;
     use crate::domain::ports::{MockGithubProvider, MockStateRepository};
     use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use ratatui::backend::TestBackend;
@@ -641,7 +642,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         }
     }
 

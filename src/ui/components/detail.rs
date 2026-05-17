@@ -247,7 +247,7 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::attention::TriggerReason;
+    use crate::domain::attention::{AttentionState, TriggerReason};
     use crate::domain::pr::{CIStatus, MergeableStatus, PRStatus, PullRequest, ReviewStatus};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -282,12 +282,12 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         }
     }
 
     fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
-        terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+        terminal.backend().buffer().content().iter().map(ratatui::buffer::Cell::symbol).collect()
     }
 
     #[test]

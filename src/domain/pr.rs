@@ -132,7 +132,7 @@ mod tests {
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
             last_seen_conversational_count: 0,
-            attention_state: Default::default(),
+            attention_state: AttentionState::default(),
         };
 
         assert_eq!(pr.number, 42);
