@@ -407,21 +407,38 @@ where
                         || old_pr.total_resolvable_count != new_pr.total_resolvable_count
                         || old_pr.unresolved_count != new_pr.unresolved_count;
 
-                    if has_changed {
+                    let is_attention_fresh = old_pr.attention_state.active_reasons.is_empty()
+                        && old_pr.attention_state.last_seen_at.is_none()
+                        && old_pr.attention_state.last_comment_at.is_none();
+                    let treat_as_first = self.is_first_sync && is_attention_fresh && !has_changed;
+
+                    if has_changed || treat_as_first {
                         if !self.is_first_sync {
                             self.notifier.notify_pr_update(old_pr, &new_pr);
                         }
                         let timeline: &[TimelineEvent] =
                             self.pr_timelines.get(&new_pr.id).map_or(&[], Vec::as_slice);
-                        let new_attn = attention::evaluate(
-                            Some(&old_pr.attention_state),
-                            Some(old_pr),
-                            &new_pr,
-                            timeline,
-                            &self.config.current_user,
-                            Utc::now(),
-                            &self.config.attention,
-                        );
+                        let new_attn = if treat_as_first {
+                            attention::evaluate(
+                                None,
+                                None,
+                                &new_pr,
+                                timeline,
+                                &self.config.current_user,
+                                Utc::now(),
+                                &self.config.attention,
+                            )
+                        } else {
+                            attention::evaluate(
+                                Some(&old_pr.attention_state),
+                                Some(old_pr),
+                                &new_pr,
+                                timeline,
+                                &self.config.current_user,
+                                Utc::now(),
+                                &self.config.attention,
+                            )
+                        };
                         let last_seen = old_pr.last_seen_at.clone();
                         let seen_unresolved = old_pr.last_seen_unresolved_count;
                         let seen_total = old_pr.last_seen_total_resolvable_count;

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(commit-commands:commit)",
+      "Bash(git push *)",
+      "WebSearch",
+      "Bash(Get-ChildItem -Path \"F:\\\\code\\\\ghwatch\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)"
+    ]
+  }
+}

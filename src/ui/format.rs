@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Local, Timelike};
+use chrono::{DateTime, Local};
 
 #[must_use]
 pub fn format_relative_time(iso_str: &str) -> String {
@@ -9,89 +9,83 @@ pub fn format_relative_time(iso_str: &str) -> String {
 
     let now = Local::now();
     let duration = now.signed_duration_since(dt);
-    let seconds = duration.num_seconds();
+    let seconds = duration.num_seconds().max(0);
 
-    if seconds < 0 {
-        return "just now".to_string();
+    if seconds < 60 {
+        return "now".to_string();
     }
 
-    if seconds < 3600 {
-        let mins = seconds / 60;
-        return format!("{mins} minutes ago");
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
     }
 
-    let today = now.date_naive();
-    let dt_date = dt.date_naive();
-
-    if dt_date == today {
-        let hours = duration.num_hours();
-        let mins = duration.num_minutes() % 60;
-        return format!("{hours} hours {mins} minutes ago");
+    let hours = minutes / 60;
+    let rem_minutes = minutes % 60;
+    if hours < 24 {
+        return format!("{hours}h {rem_minutes}m");
     }
 
-    if dt_date == today.pred_opt().unwrap_or(today) {
-        return format!("Yesterday {:02}:{:02}", dt.hour(), dt.minute());
+    let days = hours / 24;
+    let rem_hours = hours % 24;
+    if days < 7 {
+        return format!("{days}d {rem_hours}h");
     }
 
-    let days_ago = duration.num_days();
-    if days_ago <= 3 {
-        return format!("On {}, {:02}:{:02}", dt.weekday(), dt.hour(), dt.minute());
-    }
-
-    if days_ago <= 6 {
-        return format!("On {}", dt.weekday());
-    }
-
-    format!("{days_ago} days ago")
+    format!("{days}d")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, TimeZone};
+    use chrono::Duration;
 
     #[test]
-    fn test_format_relative_time() {
+    fn test_format_relative_time_now() {
         let now = Local::now();
+        let t = (now - Duration::seconds(30)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "now");
+    }
 
-        // < 60 mins
-        let t1 = (now - Duration::minutes(5)).to_rfc3339();
-        assert_eq!(format_relative_time(&t1), "5 minutes ago");
+    #[test]
+    fn test_format_relative_time_future_shows_now() {
+        let now = Local::now();
+        let t = (now + Duration::seconds(10)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "now");
+    }
 
-        // Earlier today
-        let t2 = (now - Duration::hours(2) - Duration::minutes(10)).to_rfc3339();
-        // This depends on whether it crossed midnight, but for test usually fine
-        if (now - Duration::hours(2)).date_naive() == now.date_naive() {
-            assert_eq!(format_relative_time(&t2), "2 hours 10 minutes ago");
-        }
+    #[test]
+    fn test_format_relative_time_minutes() {
+        let now = Local::now();
+        let t = (now - Duration::minutes(5)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "5m");
+    }
 
-        // Yesterday
-        let yesterday = now - Duration::days(1);
-        let t3 = Local.from_local_datetime(&yesterday.naive_local()).unwrap().to_rfc3339();
-        let expected_yesterday =
-            format!("Yesterday {:02}:{:02}", yesterday.hour(), yesterday.minute());
-        assert_eq!(format_relative_time(&t3), expected_yesterday);
+    #[test]
+    fn test_format_relative_time_hours_and_minutes() {
+        let now = Local::now();
+        let t = (now - Duration::hours(2) - Duration::minutes(10)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "2h 10m");
+    }
 
-        // 3 days ago
-        let three_days = now - Duration::days(3);
-        let t4 = Local.from_local_datetime(&three_days.naive_local()).unwrap().to_rfc3339();
-        let expected_3d = format!(
-            "On {}, {:02}:{:02}",
-            three_days.weekday(),
-            three_days.hour(),
-            three_days.minute()
-        );
-        assert_eq!(format_relative_time(&t4), expected_3d);
+    #[test]
+    fn test_format_relative_time_days_and_hours() {
+        let now = Local::now();
+        let t = (now - Duration::days(3) - Duration::hours(5)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "3d 5h");
+    }
 
-        // 6 days ago
-        let six_days = now - Duration::days(6);
-        let t5 = Local.from_local_datetime(&six_days.naive_local()).unwrap().to_rfc3339();
-        let expected_6d = format!("On {}", six_days.weekday());
-        assert_eq!(format_relative_time(&t5), expected_6d);
+    #[test]
+    fn test_format_relative_time_many_days() {
+        let now = Local::now();
+        let t = (now - Duration::days(10)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "10d");
+    }
 
-        // 10 days ago
-        let ten_days = now - Duration::days(10);
-        let t6 = Local.from_local_datetime(&ten_days.naive_local()).unwrap().to_rfc3339();
-        assert_eq!(format_relative_time(&t6), "10 days ago");
+    #[test]
+    fn test_format_relative_time_exactly_7_days() {
+        let now = Local::now();
+        let t = (now - Duration::days(7)).to_rfc3339();
+        assert_eq!(format_relative_time(&t), "7d");
     }
 }

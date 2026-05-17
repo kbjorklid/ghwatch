@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NonInteractive -File .claude/hooks/cargo-clean.ps1",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

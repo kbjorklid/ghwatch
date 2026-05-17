@@ -842,7 +842,10 @@ async fn test_converted_to_draft_clears_review_requested() {
     app.config.current_user = "testuser".to_string();
 
     assert!(
-        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::ReviewRequested),
+        app.pr_list.items()[0]
+            .attention_state
+            .active_reasons
+            .contains(&TriggerReason::ReviewRequested),
         "ReviewRequested should be active before conversion to draft"
     );
 
@@ -858,5 +861,272 @@ async fn test_converted_to_draft_clears_review_requested() {
     assert!(
         !pr.attention_state.active_reasons.contains(&TriggerReason::ReviewRequested),
         "ReviewRequested should be cleared after PR converts to draft"
+    );
+}
+
+// Test 112: Mark-as-seen on browser open occurs regardless of whether browser opened successfully
+#[tokio::test]
+async fn test_open_in_browser_marks_seen_even_when_browser_fails() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.url = "https://github.com/org/repo/pull/1".to_string();
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::Approved]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+    github
+        .expect_open_pr_in_browser()
+        .returning(|_| Err(anyhow::anyhow!("browser failed to open")));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-browser-fail-marks-seen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.config.attention.open_in_browser_marks_seen = true;
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.contains(&TriggerReason::Approved),
+        "PR should have Approved before opening"
+    );
+
+    let key_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_o).await;
+
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.is_empty(),
+        "Attention state should be cleared even when browser fails to open"
+    );
+    assert!(
+        app.pr_list.items()[0].attention_state.last_seen_at.is_some(),
+        "last_seen_at should be set even when browser fails to open"
+    );
+}
+
+// Test 114: Marking as seen does not reset the comment delta display
+#[tokio::test]
+async fn test_mark_seen_does_not_reset_comment_delta() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.unresolved_count = 2;
+    pr1.total_resolvable_count = 2;
+    pr1.conversational_count = 3;
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+    github.expect_open_pr_in_browser().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-mark-seen-comment-delta-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    let key_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_m).await;
+
+    let pr = &app.pr_list.items()[0];
+    assert!(
+        pr.attention_state.active_reasons.is_empty(),
+        "Active reasons should be cleared after mark-as-seen"
+    );
+    assert_eq!(pr.unresolved_count, 2, "unresolved_count must not be zeroed by mark-as-seen");
+    assert_eq!(
+        pr.conversational_count, 3,
+        "conversational_count must not be zeroed by mark-as-seen"
+    );
+}
+
+// Test 115: Active reasons survive application restart
+#[tokio::test]
+async fn test_active_reasons_survive_restart() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed, TriggerReason::Approved]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-reasons-survive-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let app = App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+        .unwrap();
+
+    let pr = &app.pr_list.items()[0];
+    assert!(
+        pr.attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "CiFailed should survive restart"
+    );
+    assert!(
+        pr.attention_state.active_reasons.contains(&TriggerReason::Approved),
+        "Approved should survive restart"
+    );
+}
+
+// Test 116: last_seen_at survives application restart
+#[tokio::test]
+async fn test_last_seen_at_survives_restart() {
+    use chrono::DateTime;
+    use ghwatch::domain::attention::AttentionState;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let seen_time: DateTime<chrono::Utc> = "2024-05-01T10:30:00Z".parse().unwrap();
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.attention_state = AttentionState {
+        active_reasons: Default::default(),
+        last_seen_at: Some(seen_time),
+        last_comment_at: None,
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-last-seen-survive-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let app = App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+        .unwrap();
+
+    let pr = &app.pr_list.items()[0];
+    assert_eq!(
+        pr.attention_state.last_seen_at,
+        Some(seen_time),
+        "last_seen_at should survive restart"
+    );
+}
+
+// Test 117: last_comment_at survives application restart
+#[tokio::test]
+async fn test_last_comment_at_survives_restart() {
+    use chrono::DateTime;
+    use ghwatch::domain::attention::AttentionState;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let comment_time: DateTime<chrono::Utc> = "2024-05-01T10:45:00Z".parse().unwrap();
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.attention_state = AttentionState {
+        active_reasons: Default::default(),
+        last_seen_at: None,
+        last_comment_at: Some(comment_time),
+    };
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-last-comment-survive-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let app = App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+        .unwrap();
+
+    let pr = &app.pr_list.items()[0];
+    assert_eq!(
+        pr.attention_state.last_comment_at,
+        Some(comment_time),
+        "last_comment_at should survive restart so quiet period is preserved"
+    );
+}
+
+// Test 118: PRs loaded from saved state without attention fields are treated as first appearance
+#[tokio::test]
+async fn test_saved_state_without_attention_fields_treated_as_first_appearance() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use ghwatch::domain::pr::CIStatus;
+
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    // Saved state PR: alice's PR with CI failing, but no attention fields (migration scenario)
+    let mut saved_pr = create_test_pr("20", 20);
+    saved_pr.author = "testuser".to_string();
+    saved_pr.ci_status = CIStatus::Failing;
+    saved_pr.attention_state = AttentionState::default(); // no attention fields
+    let saved_prs = vec![saved_pr.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(saved_prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-no-attn-first-appearance-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.config.current_user = "testuser".to_string();
+
+    // First poll: GitHub returns the same PR with CI still failing — no data change
+    let mut github_pr = saved_pr.clone();
+    github_pr.ci_status = CIStatus::Failing;
+
+    // is_first_sync is still true here; merge_prs should treat the PR as first appearance
+    app.merge_prs(vec![github_pr], false).await;
+
+    let pr = app.pr_list.items().iter().find(|p| p.id == "20").unwrap();
+    assert!(
+        pr.attention_state.active_reasons.contains(&TriggerReason::CiFailed),
+        "CiFailed should fire retroactively for PR with no prior attention state"
     );
 }

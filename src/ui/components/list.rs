@@ -604,4 +604,65 @@ mod tests {
             "Comment string should contain delta. Got: {line2_content}"
         );
     }
+
+    // Test 113: Comment delta is shown independently of dot color or active reasons
+    #[test]
+    fn test_render_comment_counts_shown_regardless_of_dot_state() {
+        let make_pr = |active_reasons: HashSet<TriggerReason>| PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "author".to_string(),
+            repo: "repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "1h".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 5,
+            unresolved_count: 2,
+            total_resolvable_count: 2,
+            conversational_count: 3,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            is_draft: false,
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: crate::domain::attention::AttentionState {
+                active_reasons,
+                last_seen_at: None,
+                last_comment_at: None,
+            },
+        };
+
+        let config = AppConfig { visible_columns: vec![Column::Comments], ..Default::default() };
+        let theme = Theme::dark();
+        let icons = Icons::new(false);
+
+        // No dot (no active reasons)
+        let pr_no_dot = make_pr(HashSet::new());
+        let lines = render_pr_item(&pr_no_dot, false, &config, &theme, &icons, 100);
+        let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            line2.contains("2/2") && line2.contains("3"),
+            "Comment counts should appear when there is no dot. Got: {line2}"
+        );
+
+        // Red dot (active reasons)
+        let pr_red_dot = make_pr(HashSet::from([TriggerReason::CiFailed]));
+        let lines = render_pr_item(&pr_red_dot, false, &config, &theme, &icons, 100);
+        let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            line2.contains("2/2") && line2.contains("3"),
+            "Comment counts should appear when there is a red dot. Got: {line2}"
+        );
+    }
 }

@@ -119,8 +119,8 @@ pub fn apply_archive(state: &mut AttentionState) {
     state.active_reasons.clear();
 }
 
-pub fn apply_user_activity(state: &mut AttentionState) {
-    state.active_reasons.clear();
+pub fn apply_user_activity(state: &mut AttentionState, now: DateTime<Utc>) {
+    apply_mark_seen(state, now);
 }
 
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
@@ -174,13 +174,14 @@ pub fn evaluate(
         return state;
     }
 
-    // User posted a new comment → clear all reasons
-    if !is_first {
-        let user_posted_new_comment = timeline.iter().any(|e| {
-            is_comment_event(e) && e.actor == current_user && is_newer_than(e, last_seen)
-        });
+    // User posted a new comment on own PR → clear all reasons
+    // On others' PRs, only the "submit review" clearing applies (targeted, see below)
+    if !is_first && is_own_pr {
+        let user_posted_new_comment = timeline
+            .iter()
+            .any(|e| is_comment_event(e) && e.actor == current_user && is_newer_than(e, last_seen));
         if user_posted_new_comment {
-            apply_user_activity(&mut state);
+            apply_user_activity(&mut state, now);
         }
     }
 
@@ -316,13 +317,14 @@ pub fn evaluate(
             }
         }
 
-        // Mentioned: @user in comment body (not self-mention)
+        // Mentioned: @user in comment body (not self-mention, not retroactive on first appearance)
         let mention_pattern = format!("@{current_user}");
         let mentioned = timeline.iter().any(|e| {
             is_comment_event(e)
                 && e.actor != current_user
                 && e.content.as_ref().is_some_and(|c| c.contains(&mention_pattern))
-                && (is_first || is_newer_than(e, last_seen))
+                && !is_first
+                && is_newer_than(e, last_seen)
         });
         if mentioned {
             to_add.push(TriggerReason::Mentioned);
@@ -586,6 +588,67 @@ mod tests {
         assert!(!s.active_reasons.contains(&TriggerReason::CiFailed));
     }
 
+    // Test 33: CiFailed fires on Passing→Failing on a subsequent poll (not first appearance)
+    #[test]
+    fn test_ci_failed_fires_on_passing_to_failing_subsequent_poll() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        let prev = make_pr("me"); // was Passing
+        let prev_state = AttentionState::default(); // existing state — not first appearance
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::CiFailed));
+    }
+
+    // Test 34: CiFailed fires on Pending→Failing transition
+    #[test]
+    fn test_ci_failed_fires_on_pending_to_failing() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        let mut prev = make_pr("me");
+        prev.ci_status = CIStatus::Pending;
+        let prev_state = AttentionState::default();
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::CiFailed));
+    }
+
+    // Test 36: CiFailed re-fires after a new push takes CI through Pending back to Failing
+    #[test]
+    fn test_ci_failed_refires_after_pending_transition() {
+        // CiFailed was cleared (user marked as seen), new push sent CI to Pending;
+        // now CI is Failing again — should re-fire
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        let mut prev = make_pr("me");
+        prev.ci_status = CIStatus::Pending; // after new push
+        let prev_state = AttentionState::default(); // CiFailed was cleared
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::CiFailed));
+    }
+
     #[test]
     fn test_changes_requested_fires_on_transition() {
         let mut pr = make_pr("me");
@@ -628,6 +691,29 @@ mod tests {
     }
 
     #[test]
+    fn test_changes_requested_refires_after_seen_and_new_request() {
+        // Test 42: fires again after user marks as seen (cleared) and a reviewer
+        // who had approved switches to requesting changes (prev_pr was Approved, not ChangesRequested)
+        let mut pr = make_pr("me");
+        pr.review_status = ReviewStatus::ChangesRequested;
+        pr.reviewers = vec![make_reviewer("carol", "CHANGES_REQUESTED")];
+        let mut prev = make_pr("me");
+        prev.review_status = ReviewStatus::Approved;
+        prev.reviewers = vec![make_reviewer("carol", "APPROVED")];
+        let prev_state = AttentionState::default(); // cleared by mark-as-seen
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::ChangesRequested));
+    }
+
+    #[test]
     fn test_merge_conflict_fires_on_transition() {
         let mut pr = make_pr("me");
         pr.mergeable = MergeableStatus::Conflicting;
@@ -646,6 +732,26 @@ mod tests {
             active_reasons: HashSet::from([TriggerReason::MergeConflict]),
             ..Default::default()
         };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::MergeConflict));
+    }
+
+    #[test]
+    fn test_merge_conflict_refires_after_resolved_and_reappears() {
+        // Test 47: MergeConflict re-fires after conflict was resolved (prev_pr = Mergeable)
+        // and then a new conflict appears, even when the user previously saw and cleared it
+        let mut pr = make_pr("me");
+        pr.mergeable = MergeableStatus::Conflicting;
+        let prev = make_pr("me"); // default is Mergeable — conflict was resolved between polls
+        let prev_state = AttentionState::default(); // user marked as seen after earlier conflict
         let s = evaluate(
             Some(&prev_state),
             Some(&prev),
@@ -851,7 +957,17 @@ mod tests {
     fn test_mentioned_fires_on_at_mention() {
         let pr = make_pr("alice");
         let comment = make_comment("bob", "2024-01-02T01:00:00Z", "Hey @me, please review this");
-        let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T00:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::Mentioned));
     }
 
@@ -896,7 +1012,17 @@ mod tests {
         let pr = make_pr("alice");
         let comment =
             make_comment("github-actions[bot]", "2024-01-02T01:00:00Z", "Paging @me for review");
-        let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T00:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
         assert!(s.active_reasons.contains(&TriggerReason::Mentioned));
     }
 
@@ -965,6 +1091,26 @@ mod tests {
         assert!(!s.active_reasons.contains(&TriggerReason::CommentReply));
     }
 
+    // Test 31: CommentReply does not fire if I have never commented on the PR
+    #[test]
+    fn test_comment_reply_no_fire_if_never_commented() {
+        let pr = make_pr("alice");
+        // Only other people's comments — "me" has never commented
+        let other_comment = make_comment("bob", "2024-01-02T11:40:00Z", "Changes needed");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[other_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(!s.active_reasons.contains(&TriggerReason::CommentReply));
+    }
+
     #[test]
     fn test_comment_reply_first_appearance_no_quiet_period() {
         let pr = make_pr("alice");
@@ -982,6 +1128,133 @@ mod tests {
             &AttentionConfig::default(),
         );
         assert!(s.active_reasons.contains(&TriggerReason::CommentReply));
+    }
+
+    // Test 26: Any new comment on the PR resets the quiet period clock
+    #[test]
+    fn test_comment_reply_second_comment_resets_quiet_period() {
+        let pr = make_pr("alice");
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        // first comment 20 min ago — alone it would exceed the 15-min quiet period
+        let first_comment = make_comment("bob", "2024-01-02T11:40:00Z", "Please fix");
+        // second comment 5 min ago — resets the clock
+        let second_comment = make_comment("carol", "2024-01-02T11:55:00Z", "Also this");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, first_comment, second_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CommentReply),
+            "Quiet period clock must be reset by second comment; CommentReply must not fire yet"
+        );
+    }
+
+    // Test 27: Your own new comment resets the quiet period clock
+    #[test]
+    fn test_comment_reply_own_new_comment_resets_quiet_period() {
+        let pr = make_pr("alice");
+        let old_user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        // other comment 20 min ago — would exceed quiet period without the reset
+        let other_comment = make_comment("bob", "2024-01-02T11:40:00Z", "Please fix");
+        // current user posts a new comment 5 min ago — resets the clock
+        let new_user_comment = make_comment("me", "2024-01-02T11:55:00Z", "Fixing now");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[old_user_comment, other_comment, new_user_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CommentReply),
+            "Own new comment must reset quiet period; CommentReply must not fire"
+        );
+    }
+
+    // Test 28: Bot comment resets the quiet period clock
+    #[test]
+    fn test_comment_reply_bot_comment_resets_quiet_period() {
+        let pr = make_pr("alice");
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        // human comment 20 min ago — would exceed quiet period without the reset
+        let human_comment = make_comment("bob", "2024-01-02T11:40:00Z", "Please fix");
+        // bot comment 10 min ago — resets the clock
+        let bot_comment = make_comment("github-actions[bot]", "2024-01-02T11:50:00Z", "CI report");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, human_comment, bot_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CommentReply),
+            "Bot comment must reset quiet period; CommentReply must not fire"
+        );
+    }
+
+    // Test 29: A bot comment can itself fire CommentReply after the quiet period
+    #[test]
+    fn test_comment_reply_bot_comment_fires_after_quiet_period() {
+        let pr = make_pr("alice");
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        // bot comment 20 min ago — past the 15-min quiet period
+        let bot_comment =
+            make_comment("github-actions[bot]", "2024-01-02T11:40:00Z", "CI run report");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, bot_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::CommentReply),
+            "Bot comment after the quiet period must fire CommentReply"
+        );
+    }
+
+    // Test 30: Continuously active discussion indefinitely suppresses CommentReply
+    #[test]
+    fn test_comment_reply_continuous_discussion_suppresses() {
+        let pr = make_pr("alice");
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        // Most recent comment only 5 min ago — latest clock hasn't expired
+        let recent_comment = make_comment("bob", "2024-01-02T11:55:00Z", "One more thing");
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment, recent_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CommentReply),
+            "Active discussion (latest comment < 15 min ago) must suppress CommentReply"
+        );
     }
 
     #[test]
@@ -1209,10 +1482,11 @@ mod tests {
     fn test_first_appearance_multiple_reasons_others_pr() {
         let mut pr = make_pr("alice");
         pr.requested_reviewers = vec!["me".to_string()];
+        // Mentioned does NOT fire retroactively on first appearance (Test 65)
         let comment = make_comment("bob", "2024-01-01T10:00:00Z", "Hey @me check this");
         let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
         assert!(s.active_reasons.contains(&TriggerReason::ReviewRequested));
-        assert!(s.active_reasons.contains(&TriggerReason::Mentioned));
+        assert!(!s.active_reasons.contains(&TriggerReason::Mentioned));
     }
 
     #[test]
@@ -1287,7 +1561,8 @@ mod tests {
         let mut pr = make_pr("me");
         pr.ci_status = CIStatus::Failing;
         let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "Working on it");
-        let s = evaluate(None, None, &pr, &[user_comment], "me", now(), &AttentionConfig::default());
+        let s =
+            evaluate(None, None, &pr, &[user_comment], "me", now(), &AttentionConfig::default());
         assert!(
             s.active_reasons.contains(&TriggerReason::CiFailed),
             "User activity on first appearance must not suppress retroactive triggers"
@@ -1356,6 +1631,39 @@ mod tests {
         );
     }
 
+    // Test 5 from ATTENTION_TESTS.md
+    #[test]
+    fn test_dot_color_blue_after_all_reasons_cleared() {
+        // CiFailed was active; CI now passes (CiFailed cleared) → blue dot remains because
+        // updated_at > last_seen_at and no remaining active reasons.
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Passing;
+        pr.updated_at = "2024-01-02T06:00:00Z".to_string();
+
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::CiFailed]),
+            last_seen_at: parse_ts("2024-01-02T00:00:00Z"),
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+
+        assert!(!s.active_reasons.contains(&TriggerReason::CiFailed));
+        assert!(s.active_reasons.is_empty());
+        assert_eq!(s.dot_color(&pr.updated_at), Some(DotColor::Blue));
+    }
+
+    // Test 9 from ATTENTION_TESTS.md
+    #[test]
+    fn test_review_requested_no_fire_for_different_reviewer() {
+        // "carol" is added as requested reviewer — not "me" → ReviewRequested must not fire.
+        let mut pr = make_pr("alice");
+        pr.requested_reviewers = vec!["carol".to_string()];
+        let prev = make_pr("alice");
+        let s = evaluate(None, Some(&prev), &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(!s.active_reasons.contains(&TriggerReason::ReviewRequested));
+    }
+
     #[test]
     fn test_non_draft_to_non_draft_no_clear() {
         // prev_pr non-draft, new_pr non-draft — no clear
@@ -1377,6 +1685,132 @@ mod tests {
         assert!(
             s.active_reasons.contains(&TriggerReason::ReviewRequested),
             "ReviewRequested must not be cleared in non-draft to non-draft transition"
+        );
+    }
+
+    // Test 82: Converting to draft clears ReReViewRequested
+    #[test]
+    fn test_converted_to_draft_clears_re_review_requested() {
+        let mut prev_pr = make_pr("alice");
+        prev_pr.is_draft = false;
+        let mut new_pr = make_pr("alice");
+        new_pr.is_draft = true;
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([
+                TriggerReason::ReReviewRequested,
+                TriggerReason::Mentioned,
+            ]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReReviewRequested),
+            "ReReviewRequested should be cleared when PR converts to draft"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned should remain when PR converts to draft"
+        );
+    }
+
+    // Test 83: Converting to draft leaves all other active reasons intact
+    #[test]
+    fn test_converted_to_draft_leaves_other_reasons_intact() {
+        let mut prev_pr = make_pr("alice");
+        prev_pr.is_draft = false;
+        let mut new_pr = make_pr("alice");
+        new_pr.is_draft = true;
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([
+                TriggerReason::ReviewRequested,
+                TriggerReason::Mentioned,
+                TriggerReason::CommentReply,
+            ]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested should be cleared when PR converts to draft"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned should remain when PR converts to draft"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::CommentReply),
+            "CommentReply should remain when PR converts to draft"
+        );
+    }
+
+    // Test 87: CI passing when CiFailed is not active has no effect
+    #[test]
+    fn test_ci_passes_no_effect_when_ci_failed_not_active() {
+        let mut pr = make_pr("me"); // ci_status = Passing
+        pr.reviewers = vec![make_reviewer("carol", "CHANGES_REQUESTED")];
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CiFailed),
+            "CiFailed should not appear when CI passes and it was not active"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::ChangesRequested),
+            "ChangesRequested should remain unaffected by CI passing"
+        );
+    }
+
+    // Test 90: ChangesRequested cleared when the only change-requesting reviewer is dismissed
+    #[test]
+    fn test_changes_requested_cleared_when_reviewer_dismissed() {
+        let mut pr = make_pr("me");
+        pr.reviewers = vec![make_reviewer("carol", "DISMISSED")];
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ChangesRequested),
+            "ChangesRequested should be cleared when the only change-requesting reviewer is dismissed"
+        );
+    }
+
+    // Test 91: ChangesRequested cleared when all change-requesting reviewers have been handled
+    #[test]
+    fn test_changes_requested_cleared_when_all_reviewers_handled() {
+        let mut pr = make_pr("me");
+        pr.reviewers = vec![make_reviewer("carol", "APPROVED"), make_reviewer("dave", "DISMISSED")];
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ChangesRequested),
+            "ChangesRequested should be cleared when carol approves and dave is dismissed"
         );
     }
 
@@ -1403,6 +1837,661 @@ mod tests {
         assert!(
             s.active_reasons.contains(&TriggerReason::Mentioned),
             "Others' comments must not clear active reasons"
+        );
+    }
+
+    // Test 15: New push alone does not trigger ReReViewRequested
+    #[test]
+    fn test_re_review_not_fire_on_push_without_review_request_event() {
+        let pr = make_pr("alice");
+        let prior_review = make_review("me", "2024-01-01T10:00:00Z");
+        // Author pushed a commit — no ReviewRequestedEvent in the timeline
+        let push = make_event("PushedEvent", "alice", "2024-01-02T01:00:00Z");
+        let timeline = vec![prior_review, push];
+        let s = evaluate(None, None, &pr, &timeline, "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReReviewRequested),
+            "A push without ReviewRequestedEvent must not fire ReReViewRequested"
+        );
+    }
+
+    // Test 17: Mentioned fires for an inline review comment (PullRequestReview type)
+    #[test]
+    fn test_mentioned_fires_on_inline_review_comment() {
+        let pr = make_pr("alice");
+        let inline_comment = TimelineEvent {
+            id: "e1".to_string(),
+            event_type: "PullRequestReview".to_string(),
+            actor: "bob".to_string(),
+            created_at: "2024-01-02T01:00:00Z".to_string(),
+            content: Some("Please address this, @me".to_string()),
+            reviewer_login: None,
+        };
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T00:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[inline_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned should fire when @me appears in an inline PullRequestReview comment"
+        );
+    }
+
+    // Test 19: Mentioned does not fire for a mention in the PR title
+    #[test]
+    fn test_mentioned_no_fire_for_pr_title_mention() {
+        let mut pr = make_pr("alice");
+        pr.title = "Fix issue reported by @me".to_string();
+        let s = evaluate(None, None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned must not fire for @me in the PR title"
+        );
+    }
+
+    // Test 20: Mentioned does not fire for a mention in the PR body/description
+    #[test]
+    fn test_mentioned_no_fire_for_pr_body_mention() {
+        let mut pr = make_pr("alice");
+        pr.body = "This work was requested by @me originally.".to_string();
+        let s = evaluate(None, None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned must not fire for @me in the PR body/description"
+        );
+    }
+
+    // Test 51: Approved fires for each distinct new approving review event
+    #[test]
+    fn test_approved_refires_after_mark_seen_with_new_reviewer() {
+        let mut prev_pr = make_pr("me");
+        prev_pr.reviewers = vec![make_reviewer("carol", "APPROVED")];
+        let mut new_pr = make_pr("me");
+        new_pr.reviewers =
+            vec![make_reviewer("carol", "APPROVED"), make_reviewer("dave", "APPROVED")];
+        // prev_state empty: simulates mark-as-seen after carol's approval
+        let prev_state = AttentionState::default();
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &new_pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::Approved));
+    }
+
+    // Test 57: Bot comments count for NewComments
+    #[test]
+    fn test_new_comments_bot_comment_fires_after_quiet_period() {
+        let mut pr = make_pr("me");
+        pr.comment_count = 1;
+        let bot_comment =
+            make_comment("dependabot[bot]", "2024-01-02T11:40:00Z", "Dependency update"); // 20 min ago
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-02T11:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[bot_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.contains(&TriggerReason::NewComments));
+    }
+
+    // Test 58: Any comment on PR #20 resets the NewComments quiet period clock
+    #[test]
+    fn test_new_comments_second_comment_resets_quiet_period() {
+        let mut pr = make_pr("me");
+        pr.comment_count = 2;
+        // first comment 20 min ago, second comment 10 min ago — clock reset to T+10min
+        let comment1 = make_comment("bob", "2024-01-02T11:40:00Z", "First comment");
+        let comment2 = make_comment("carol", "2024-01-02T11:50:00Z", "Second comment"); // 10 min ago
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-02T11:00:00Z"), ..Default::default() };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[comment1, comment2],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(!s.active_reasons.contains(&TriggerReason::NewComments));
+    }
+
+    // Test 60: On first appearance, all state-based triggers evaluate current state simultaneously
+    #[test]
+    fn test_first_appearance_ci_changes_requested_and_merge_conflict_simultaneously() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        pr.review_status = ReviewStatus::ChangesRequested;
+        pr.mergeable = MergeableStatus::Conflicting;
+        let s = evaluate(None, None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(s.active_reasons.contains(&TriggerReason::CiFailed));
+        assert!(s.active_reasons.contains(&TriggerReason::ChangesRequested));
+        assert!(s.active_reasons.contains(&TriggerReason::MergeConflict));
+    }
+
+    // Test 65: Mentioned does not fire retroactively on first appearance
+    #[test]
+    fn test_mentioned_no_fire_on_first_appearance() {
+        let pr = make_pr("alice");
+        let comment = make_comment("bob", "2024-01-01T10:00:00Z", "Hey @me, check this out");
+        let s = evaluate(None, None, &pr, &[comment], "me", now(), &AttentionConfig::default());
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned must not fire retroactively on first appearance"
+        );
+    }
+
+    // Test 68: Mark-as-seen clears the blue dot
+    #[test]
+    fn test_mark_seen_clears_blue_dot() {
+        let mut state = AttentionState::default(); // no last_seen_at → blue dot
+        let updated_at = "2024-01-02T00:00:00Z";
+        assert_eq!(state.dot_color(updated_at), Some(DotColor::Blue));
+        state.mark_seen(now()); // now() = 2024-01-02T12:00:00Z > updated_at
+        assert_eq!(state.dot_color(updated_at), None, "Blue dot should be gone after mark_seen");
+    }
+
+    // Test 71: Posting an inline review comment clears all active reasons
+    #[test]
+    fn test_user_activity_clears_via_inline_review_comment() {
+        let pr = make_pr("me");
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ChangesRequested]),
+            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
+            ..Default::default()
+        };
+        let inline_comment = TimelineEvent {
+            id: "e1".to_string(),
+            event_type: "PullRequestReview".to_string(),
+            actor: "me".to_string(),
+            created_at: "2024-01-02T11:50:00Z".to_string(),
+            content: Some("Addressed all points".to_string()),
+            reviewer_login: None,
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[inline_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.is_empty(),
+            "Inline review comment by user should clear all active reasons"
+        );
+    }
+
+    // Test 72: Pushing a commit does NOT count as user activity and does not clear reasons
+    #[test]
+    fn test_push_does_not_clear_active_reasons() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::CiFailed]),
+            last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
+            ..Default::default()
+        };
+        let push = make_event("PushedEvent", "me", "2024-01-02T11:50:00Z");
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[push],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::CiFailed),
+            "A push must not count as user activity and must not clear active reasons"
+        );
+    }
+
+    // Test 76: Posting a comment also clears the blue dot
+    #[test]
+    fn test_user_activity_clears_blue_dot() {
+        let pr = make_pr("me"); // updated_at = "2024-01-02T06:00:00Z"
+        let prev_state = AttentionState {
+            active_reasons: HashSet::new(),
+            last_seen_at: parse_ts("2024-01-01T00:00:00Z"), // before updated_at → blue dot
+            ..Default::default()
+        };
+        assert_eq!(prev_state.dot_color(&pr.updated_at), Some(DotColor::Blue));
+        let user_comment = make_comment("me", "2024-01-02T11:50:00Z", "Looks good");
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[user_comment],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(s.active_reasons.is_empty(), "No active reasons after user comment");
+        assert_eq!(
+            s.dot_color(&pr.updated_at),
+            None,
+            "Blue dot must be gone after user posts a comment"
+        );
+    }
+
+    // Test 78: After PR is closed, blue dot persists if updated_at > last_seen_at
+    #[test]
+    fn test_pr_closed_blue_dot_persists() {
+        let mut pr = make_pr("me");
+        pr.status = PRStatus::Closed;
+        pr.updated_at = "2024-01-02T06:00:00Z".to_string();
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::CiFailed]),
+            last_seen_at: parse_ts("2024-01-01T00:00:00Z"), // before updated_at
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(s.active_reasons.is_empty(), "Closed PR must have no red reasons");
+        assert_eq!(
+            s.dot_color(&pr.updated_at),
+            Some(DotColor::Blue),
+            "Blue dot must persist on closed PR when updated_at > last_seen_at"
+        );
+    }
+
+    // Test 80: After PR is merged, blue dot persists if updated_at > last_seen_at
+    #[test]
+    fn test_pr_merged_blue_dot_persists() {
+        let mut pr = make_pr("me");
+        pr.status = PRStatus::Merged;
+        pr.updated_at = "2024-01-02T06:00:00Z".to_string();
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::Approved]),
+            last_seen_at: parse_ts("2024-01-01T00:00:00Z"), // before updated_at
+            ..Default::default()
+        };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[], "me", now(), &AttentionConfig::default());
+        assert!(s.active_reasons.is_empty(), "Merged PR must have no red reasons");
+        assert_eq!(
+            s.dot_color(&pr.updated_at),
+            Some(DotColor::Blue),
+            "Blue dot must persist on merged PR when updated_at > last_seen_at"
+        );
+    }
+
+    // Test 93: Submitting a "request changes" review clears ReviewRequested
+    #[test]
+    fn test_user_submits_changes_request_review_clears_review_requested() {
+        let pr = make_pr("alice");
+        let review = TimelineEvent {
+            id: "e1".to_string(),
+            event_type: "PullRequestReview".to_string(),
+            actor: "me".to_string(),
+            created_at: "2024-01-02T01:00:00Z".to_string(),
+            content: Some("CHANGES_REQUESTED: needs work".to_string()),
+            reviewer_login: None,
+        };
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[review],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must be cleared when user submits a changes-requested review"
+        );
+    }
+
+    // Test 94: Submitting a comment-only review clears ReviewRequested
+    #[test]
+    fn test_user_submits_comment_review_clears_review_requested() {
+        let pr = make_pr("alice");
+        let review = TimelineEvent {
+            id: "e1".to_string(),
+            event_type: "PullRequestReview".to_string(),
+            actor: "me".to_string(),
+            created_at: "2024-01-02T01:00:00Z".to_string(),
+            content: Some("COMMENTED: looks good so far".to_string()),
+            reviewer_login: None,
+        };
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[review],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must be cleared when user submits a comment-only review"
+        );
+    }
+
+    // Test 95: Submitting a review clears ReReViewRequested
+    #[test]
+    fn test_user_submits_review_clears_re_review_requested() {
+        let pr = make_pr("alice");
+        let review = make_review("me", "2024-01-02T01:00:00Z");
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[review],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReReviewRequested),
+            "ReReViewRequested must be cleared when user submits a review"
+        );
+    }
+
+    // Test 96: Submitting a review does not clear unrelated reasons
+    #[test]
+    fn test_user_submits_review_leaves_unrelated_reasons() {
+        let pr = make_pr("alice");
+        let review = make_review("me", "2024-01-02T01:00:00Z");
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([
+                TriggerReason::ReviewRequested,
+                TriggerReason::Mentioned,
+            ]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            None,
+            &pr,
+            &[review],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must be cleared by submitting a review"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Mentioned),
+            "Mentioned must not be cleared by submitting a review"
+        );
+    }
+
+    // Test 98: Removing my review request clears ReReViewRequested
+    #[test]
+    fn test_review_request_removed_clears_re_review_requested() {
+        let mut pr = make_pr("alice");
+        pr.requested_reviewers = vec![];
+        let mut prev_pr = make_pr("alice");
+        prev_pr.requested_reviewers = vec!["me".to_string()];
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReReviewRequested),
+            "ReReViewRequested must be cleared when review request is removed"
+        );
+    }
+
+    // Test 99: Both ReviewRequested and ReReViewRequested are cleared on removal (regardless of which was active)
+    #[test]
+    fn test_review_request_removed_clears_both_review_reasons() {
+        let mut pr = make_pr("alice");
+        pr.requested_reviewers = vec![];
+        let mut prev_pr = make_pr("alice");
+        prev_pr.requested_reviewers = vec!["me".to_string()];
+        // Only ReReViewRequested is active (ReviewRequested was already superseded)
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::ReReviewRequested]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&prev_pr),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReviewRequested),
+            "ReviewRequested must not be in the active set after removal"
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::ReReviewRequested),
+            "ReReViewRequested must be cleared when review request is removed"
+        );
+    }
+
+    // Test 100: Red dot persists until all active reasons are cleared
+    #[test]
+    fn test_red_dot_persists_until_all_reasons_cleared() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Passing;
+        pr.review_status = ReviewStatus::ChangesRequested;
+        pr.reviewers = vec![make_reviewer("carol", "CHANGES_REQUESTED")];
+        let prev_state = AttentionState {
+            active_reasons: HashSet::from([
+                TriggerReason::CiFailed,
+                TriggerReason::ChangesRequested,
+                TriggerReason::Approved,
+            ]),
+            ..Default::default()
+        };
+        let s = evaluate(
+            Some(&prev_state),
+            Some(&pr),
+            &pr,
+            &[],
+            "me",
+            now(),
+            &AttentionConfig::default(),
+        );
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CiFailed),
+            "CiFailed must be cleared when CI passes"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::ChangesRequested),
+            "ChangesRequested must remain while reviewer still has outstanding request"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::Approved),
+            "Approved must remain until explicitly cleared"
+        );
+        assert_eq!(
+            s.dot_color(&pr.updated_at),
+            Some(DotColor::Red),
+            "Red dot must persist while any reason remains active"
+        );
+    }
+
+    // Test 103: All reasons cleared after mark-as-seen removes red dot
+    #[test]
+    fn test_mark_seen_clears_multiple_reasons_removes_red_dot() {
+        let pr = make_pr("me");
+        let mut state = AttentionState {
+            active_reasons: HashSet::from([TriggerReason::CiFailed, TriggerReason::Approved]),
+            ..Default::default()
+        };
+        assert_eq!(state.dot_color(&pr.updated_at), Some(DotColor::Red));
+        apply_mark_seen(&mut state, now());
+        assert!(state.active_reasons.is_empty());
+        assert_eq!(
+            state.dot_color(&pr.updated_at),
+            None,
+            "Red dot must be gone after mark-as-seen"
+        );
+    }
+
+    // Test 104: Quiet period controls when CommentReply fires (Scenario Outline)
+    #[test]
+    fn test_comment_reply_quiet_period_scenario_outline() {
+        let scenarios: &[(u64, i64, bool)] = &[
+            (15, 10, false),
+            (15, 15, true),
+            (15, 20, true),
+            (0, 0, true),
+            (60, 59, false),
+            (60, 61, true),
+            (120, 119, false),
+            (120, 121, true),
+        ];
+        let n = now();
+        for &(quiet_period_mins, elapsed, should_fire) in scenarios {
+            let pr = make_pr("alice");
+            let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+            let last_comment_ts = n - Duration::minutes(elapsed);
+            let other_comment = TimelineEvent {
+                id: "e2".to_string(),
+                event_type: "IssueComment".to_string(),
+                actor: "bob".to_string(),
+                created_at: last_comment_ts.to_rfc3339(),
+                content: Some("Please fix".to_string()),
+                reviewer_login: None,
+            };
+            let prev_state = AttentionState {
+                last_seen_at: parse_ts("2024-01-01T09:00:00Z"),
+                ..Default::default()
+            };
+            let config = AttentionConfig { quiet_period_mins, ..Default::default() };
+            let s = evaluate(
+                Some(&prev_state),
+                None,
+                &pr,
+                &[user_comment, other_comment],
+                "me",
+                n,
+                &config,
+            );
+            if should_fire {
+                assert!(
+                    s.active_reasons.contains(&TriggerReason::CommentReply),
+                    "CommentReply should fire: quiet_period={quiet_period_mins}min elapsed={elapsed}min"
+                );
+            } else {
+                assert!(
+                    !s.active_reasons.contains(&TriggerReason::CommentReply),
+                    "CommentReply should not fire: quiet_period={quiet_period_mins}min elapsed={elapsed}min"
+                );
+            }
+        }
+    }
+
+    // Test 105: Quiet period of 0 means CommentReply fires immediately on new comment
+    #[test]
+    fn test_comment_reply_fires_immediately_with_zero_quiet_period() {
+        let pr = make_pr("alice");
+        let user_comment = make_comment("me", "2024-01-01T10:00:00Z", "LGTM");
+        let n = now();
+        let new_comment = TimelineEvent {
+            id: "e2".to_string(),
+            event_type: "IssueComment".to_string(),
+            actor: "bob".to_string(),
+            created_at: n.to_rfc3339(),
+            content: Some("Looks good".to_string()),
+            reviewer_login: None,
+        };
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let config = AttentionConfig { quiet_period_mins: 0, ..Default::default() };
+        let s =
+            evaluate(Some(&prev_state), None, &pr, &[user_comment, new_comment], "me", n, &config);
+        assert!(
+            s.active_reasons.contains(&TriggerReason::CommentReply),
+            "CommentReply must fire immediately when quiet_period is 0"
+        );
+    }
+
+    // Test 106: Quiet period of 0 means NewComments fires immediately on new comment
+    #[test]
+    fn test_new_comments_fires_immediately_with_zero_quiet_period() {
+        let pr = make_pr("me");
+        let n = now();
+        let new_comment = TimelineEvent {
+            id: "e1".to_string(),
+            event_type: "IssueComment".to_string(),
+            actor: "bob".to_string(),
+            created_at: n.to_rfc3339(),
+            content: Some("Great PR".to_string()),
+            reviewer_login: None,
+        };
+        let prev_state =
+            AttentionState { last_seen_at: parse_ts("2024-01-01T09:00:00Z"), ..Default::default() };
+        let config = AttentionConfig { quiet_period_mins: 0, ..Default::default() };
+        let s = evaluate(Some(&prev_state), None, &pr, &[new_comment], "me", n, &config);
+        assert!(
+            s.active_reasons.contains(&TriggerReason::NewComments),
+            "NewComments must fire immediately when quiet_period is 0"
+        );
+    }
+
+    // Test 109: Disabling one rule does not affect other rules
+    #[test]
+    fn test_disabled_rule_does_not_affect_other_rules() {
+        let mut pr = make_pr("me");
+        pr.ci_status = CIStatus::Failing;
+        pr.review_status = ReviewStatus::ChangesRequested;
+        let config = AttentionConfig {
+            quiet_period_mins: 15,
+            disabled_reasons: HashSet::from([TriggerReason::CiFailed]),
+            open_in_browser_marks_seen: false,
+        };
+        let s = evaluate(None, None, &pr, &[], "me", now(), &config);
+        assert!(
+            !s.active_reasons.contains(&TriggerReason::CiFailed),
+            "CiFailed must not fire when disabled"
+        );
+        assert!(
+            s.active_reasons.contains(&TriggerReason::ChangesRequested),
+            "ChangesRequested must still fire when CiFailed is the only disabled rule"
         );
     }
 }
