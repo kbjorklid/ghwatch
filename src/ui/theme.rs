@@ -1,4 +1,5 @@
 use ratatui::style::Color;
+use ratatui_themes::ThemeName;
 
 #[derive(Debug)]
 pub struct Theme {
@@ -16,59 +17,34 @@ pub struct Theme {
 
 impl Theme {
     #[must_use]
-    pub const fn dark() -> Self {
-        Self {
-            border: Color::Gray,
-            title: Color::White,
-            text: Color::White,
-            gray: Color::Gray,
-            highlight_bg: Color::DarkGray,
-            highlight_fg: Color::Yellow,
-            success: Color::Green,
-            error: Color::Red,
-            warning: Color::Yellow,
-            info: Color::Cyan,
-        }
+    pub fn dark() -> Self {
+        Self::from_name("one-dark-pro")
     }
 
     #[must_use]
-    pub const fn nord() -> Self {
-        Self {
-            border: Color::Rgb(76, 86, 106),
-            title: Color::Rgb(236, 239, 244),
-            text: Color::Rgb(216, 222, 233),
-            gray: Color::Rgb(76, 86, 106),
-            highlight_bg: Color::Rgb(59, 66, 82),
-            highlight_fg: Color::Rgb(136, 192, 208),
-            success: Color::Rgb(163, 190, 140),
-            error: Color::Rgb(191, 97, 106),
-            warning: Color::Rgb(235, 203, 139),
-            info: Color::Rgb(129, 161, 193),
-        }
+    pub fn nord() -> Self {
+        Self::from_name("nord")
     }
 
     #[must_use]
-    pub const fn dracula() -> Self {
-        Self {
-            border: Color::Rgb(98, 114, 164),
-            title: Color::Rgb(248, 248, 242),
-            text: Color::Rgb(248, 248, 242),
-            gray: Color::Rgb(98, 114, 164),
-            highlight_bg: Color::Rgb(68, 71, 90),
-            highlight_fg: Color::Rgb(189, 147, 249),
-            success: Color::Rgb(80, 250, 123),
-            error: Color::Rgb(255, 85, 85),
-            warning: Color::Rgb(241, 250, 140),
-            info: Color::Rgb(139, 233, 253),
-        }
+    pub fn dracula() -> Self {
+        Self::from_name("dracula")
     }
 
     #[must_use]
     pub fn from_name(name: &str) -> Self {
-        match name.to_lowercase().as_str() {
-            "nord" => Self::nord(),
-            "dracula" => Self::dracula(),
-            _ => Self::dark(),
+        let p = name.parse::<ThemeName>().unwrap_or_default().palette();
+        Self {
+            border: p.muted,
+            title: p.fg,
+            text: p.fg,
+            gray: p.muted,
+            highlight_bg: p.selection,
+            highlight_fg: p.accent,
+            success: p.success,
+            error: p.error,
+            warning: p.warning,
+            info: p.info,
         }
     }
 }
@@ -78,36 +54,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dark_theme_visibility() {
-        let theme = Theme::dark();
-        // Ensure gray text is visible on highlight background
+    fn test_theme_colors_are_distinct() {
+        let theme = Theme::from_name("dracula");
+        assert_ne!(theme.gray, theme.highlight_bg, "muted and selection should differ");
+        assert_ne!(theme.success, theme.error, "success and error should differ");
+    }
+
+    #[test]
+    fn test_from_name_known_themes_differ() {
+        let nord = Theme::from_name("nord");
+        let dracula = Theme::from_name("dracula");
         assert_ne!(
-            theme.gray, theme.highlight_bg,
-            "Gray text is invisible on highlight background in dark theme"
+            nord.highlight_fg, dracula.highlight_fg,
+            "nord and dracula accent colors should differ"
         );
     }
 
     #[test]
-    fn test_nord_theme() {
-        let theme = Theme::nord();
-        assert_eq!(theme.info, Color::Rgb(129, 161, 193));
+    fn test_from_name_unknown_falls_back_to_dracula() {
+        let unknown = Theme::from_name("dark");
+        let dracula = Theme::from_name("dracula");
+        assert_eq!(unknown.info, dracula.info, "unknown name should fall back to Dracula");
     }
 
     #[test]
-    fn test_dracula_theme() {
-        let theme = Theme::dracula();
-        assert_eq!(theme.info, Color::Rgb(139, 233, 253));
-    }
-
-    #[test]
-    fn test_from_name() {
-        let nord = Theme::from_name("nord");
-        assert_eq!(nord.info, Color::Rgb(129, 161, 193));
-
-        let dracula = Theme::from_name("DRACULA");
-        assert_eq!(dracula.info, Color::Rgb(139, 233, 253));
-
-        let default = Theme::from_name("unknown");
-        assert_eq!(default.info, Color::Cyan);
+    fn test_all_themes_load_without_panic() {
+        for name in ThemeName::all() {
+            let theme = Theme::from_name(name.slug());
+            assert_ne!(theme.text, theme.highlight_bg);
+        }
     }
 }

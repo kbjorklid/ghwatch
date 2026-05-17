@@ -29,6 +29,8 @@ pub fn render_status_bar(
         AppMode::Help => "Esc/q: Back",
         AppMode::AddQueryName | AppMode::AddQuerySearch => "Enter: Next | Esc: Cancel",
         AppMode::ConfirmQuery => "y: Accept | n/Esc: Back",
+        AppMode::DeleteQueryConfirm => "y: Delete | n/Esc: Cancel",
+        AppMode::ThemePicker => "j/k: Browse | Enter: Select | Esc: Cancel",
     };
 
     let refresh_text = match last_refresh {

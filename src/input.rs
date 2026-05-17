@@ -85,12 +85,14 @@ where
         AppMode::Help => handle_help_key(app, key),
         AppMode::Archive => handle_archive_key(app, key),
         AppMode::Settings => handle_settings_key(app, key),
+        AppMode::ThemePicker => handle_theme_picker_key(app, key),
         AppMode::Diagnostic => handle_diagnostic_key(app, key),
         AppMode::LogDetail => handle_log_detail_key(app, key),
         AppMode::Normal => handle_normal_key(app, key).await,
         AppMode::AddQueryName => handle_add_query_name_key(app, key).await,
         AppMode::AddQuerySearch => handle_add_query_search_key(app, key).await,
         AppMode::ConfirmQuery => handle_confirm_query_key(app, key).await,
+        AppMode::DeleteQueryConfirm => handle_delete_query_confirm_key(app, key),
     }
 
     if old_index != app.pr_list.selected_index() {
@@ -209,12 +211,12 @@ where
                 SettingAction::ToggleStatusBar => {
                     app.config.show_status_bar = !app.config.show_status_bar;
                 }
-                SettingAction::CycleTheme => {
-                    app.config.theme = match app.config.theme.as_str() {
-                        "dark" => "nord".to_string(),
-                        "nord" => "dracula".to_string(),
-                        _ => "dark".to_string(),
-                    };
+                SettingAction::OpenThemePicker => {
+                    let themes = ratatui_themes::ThemeName::all();
+                    app.theme_picker_original = Some(app.config.theme.clone());
+                    app.theme_picker_index =
+                        themes.iter().position(|t| t.slug() == app.config.theme).unwrap_or(0);
+                    app.mode = AppMode::ThemePicker;
                 }
                 SettingAction::ToggleColumn(col) => {
                     if let Some(pos) = app.config.visible_columns.iter().position(|c| c == &col) {
@@ -236,6 +238,27 @@ where
                     app.is_testing_query = false;
                     app.mode = AppMode::AddQueryName;
                 }
+            }
+        }
+        KeyCode::Char('e') => {
+            if let SettingAction::ToggleQuery(q_idx) =
+                get_setting_action(&app.config, app.settings_selected_index)
+            {
+                app.editing_query_index = Some(q_idx);
+                app.query_name_buffer = app.config.queries[q_idx].name.clone();
+                app.query_search_buffer = app.config.queries[q_idx].search.clone();
+                app.query_test_results = None;
+                app.query_test_error = None;
+                app.is_testing_query = false;
+                app.mode = AppMode::AddQueryName;
+            }
+        }
+        KeyCode::Char('d') => {
+            if let SettingAction::ToggleQuery(q_idx) =
+                get_setting_action(&app.config, app.settings_selected_index)
+            {
+                app.deleting_query_index = Some(q_idx);
+                app.mode = AppMode::DeleteQueryConfirm;
             }
         }
         KeyCode::Char('D') => {
@@ -263,6 +286,7 @@ where
             app.mode = AppMode::AddQuerySearch;
         }
         KeyCode::Esc => {
+            app.editing_query_index = None;
             app.mode = AppMode::Settings;
         }
         KeyCode::Backspace => {
@@ -322,21 +346,86 @@ where
         KeyCode::Char('y') | KeyCode::Enter
             if !app.is_testing_query && app.query_test_error.is_none() =>
         {
-            // Add the query
-            app.config.queries.push(crate::config::QueryConfig {
-                name: app.query_name_buffer.clone(),
-                search: app.query_search_buffer.clone(),
-                interval: "60s".to_string(),
-                enabled: true,
-            });
+            if let Some(idx) = app.editing_query_index.take() {
+                if idx < app.config.queries.len() {
+                    app.config.queries[idx].name.clone_from(&app.query_name_buffer);
+                    app.config.queries[idx].search.clone_from(&app.query_search_buffer);
+                }
+            } else {
+                app.config.queries.push(crate::config::QueryConfig {
+                    name: app.query_name_buffer.clone(),
+                    search: app.query_search_buffer.clone(),
+                    interval: "60s".to_string(),
+                    enabled: true,
+                });
+            }
             app.mode = AppMode::Settings;
-            // Trigger a refresh for the new query
             if app.is_writer {
                 app.handle_config_reload(app.config.clone());
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
             app.mode = AppMode::AddQuerySearch;
+        }
+        _ => {}
+    }
+}
+
+fn handle_delete_query_confirm_key<B: Backend>(app: &mut App<B>, key: KeyEvent)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => {
+            if let Some(idx) = app.deleting_query_index.take()
+                && idx < app.config.queries.len()
+            {
+                app.config.queries.remove(idx);
+                let max_idx = (10 + app.config.queries.len()).saturating_sub(1);
+                if app.settings_selected_index > max_idx {
+                    app.settings_selected_index = max_idx;
+                }
+                save_config(app);
+                if app.is_writer {
+                    app.handle_config_reload(app.config.clone());
+                }
+            }
+            app.mode = AppMode::Settings;
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.deleting_query_index = None;
+            app.mode = AppMode::Settings;
+        }
+        _ => {}
+    }
+}
+
+fn handle_theme_picker_key<B: Backend>(app: &mut App<B>, key: KeyEvent)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let themes = ratatui_themes::ThemeName::all();
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down
+            if app.theme_picker_index < themes.len().saturating_sub(1) =>
+        {
+            app.theme_picker_index += 1;
+            app.config.theme = themes[app.theme_picker_index].slug().to_string();
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.theme_picker_index > 0 => {
+            app.theme_picker_index -= 1;
+            app.config.theme = themes[app.theme_picker_index].slug().to_string();
+        }
+        KeyCode::Enter => {
+            app.theme_picker_original = None;
+            app.mode = AppMode::Settings;
+            save_config(app);
+        }
+        KeyCode::Esc => {
+            if let Some(original) = app.theme_picker_original.take() {
+                app.config.theme = original;
+            }
+            app.mode = AppMode::Settings;
         }
         _ => {}
     }
@@ -622,5 +711,155 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
         assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_enter_captures_original_and_sets_index() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::Settings;
+        app.settings_selected_index = 4;
+        app.config.theme = "nord".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::ThemePicker);
+        assert_eq!(app.theme_picker_original, Some("nord".to_string()));
+        let nord_idx =
+            ratatui_themes::ThemeName::all().iter().position(|t| t.slug() == "nord").unwrap();
+        assert_eq!(app.theme_picker_index, nord_idx);
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_j_updates_index_and_live_preview() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::ThemePicker;
+        app.theme_picker_index = 0;
+        app.theme_picker_original = Some("dracula".to_string());
+        app.config.theme = "dracula".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)).await;
+
+        assert_eq!(app.theme_picker_index, 1);
+        let expected_slug = ratatui_themes::ThemeName::all()[1].slug();
+        assert_eq!(app.config.theme, expected_slug);
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_enter_commits_theme() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::ThemePicker;
+        app.theme_picker_index = 2;
+        app.theme_picker_original = Some("dracula".to_string());
+        app.config.theme = "nord".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.theme_picker_original, None);
+        assert_eq!(app.config.theme, "nord");
+    }
+
+    #[tokio::test]
+    async fn test_handle_settings_edit_query_prefills_buffers() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::Settings;
+        app.config.queries = vec![crate::config::QueryConfig {
+            name: "My Query".to_string(),
+            search: "is:pr author:me".to_string(),
+            interval: "60s".to_string(),
+            enabled: true,
+        }];
+        app.settings_selected_index = 10;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::AddQueryName);
+        assert_eq!(app.editing_query_index, Some(0));
+        assert_eq!(app.query_name_buffer, "My Query");
+        assert_eq!(app.query_search_buffer, "is:pr author:me");
+    }
+
+    #[tokio::test]
+    async fn test_handle_settings_delete_query_shows_confirm() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::Settings;
+        app.config.queries = vec![crate::config::QueryConfig {
+            name: "My Query".to_string(),
+            search: "is:pr author:me".to_string(),
+            interval: "60s".to_string(),
+            enabled: true,
+        }];
+        app.settings_selected_index = 10;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::DeleteQueryConfirm);
+        assert_eq!(app.deleting_query_index, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_handle_delete_confirm_y_removes_query() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::DeleteQueryConfirm;
+        app.config.queries = vec![crate::config::QueryConfig {
+            name: "My Query".to_string(),
+            search: "is:pr author:me".to_string(),
+            interval: "60s".to_string(),
+            enabled: true,
+        }];
+        app.deleting_query_index = Some(0);
+        app.settings_selected_index = 10;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert!(app.config.queries.is_empty());
+        assert_eq!(app.deleting_query_index, None);
+    }
+
+    #[tokio::test]
+    async fn test_handle_delete_confirm_esc_cancels() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::DeleteQueryConfirm;
+        app.config.queries = vec![crate::config::QueryConfig {
+            name: "My Query".to_string(),
+            search: "is:pr author:me".to_string(),
+            interval: "60s".to_string(),
+            enabled: true,
+        }];
+        app.deleting_query_index = Some(0);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.config.queries.len(), 1);
+        assert_eq!(app.deleting_query_index, None);
+    }
+
+    #[tokio::test]
+    async fn test_handle_settings_edit_esc_from_name_clears_editing_index() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::AddQueryName;
+        app.editing_query_index = Some(0);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.editing_query_index, None);
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_esc_restores_original_theme() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::ThemePicker;
+        app.theme_picker_index = 2;
+        app.theme_picker_original = Some("dracula".to_string());
+        app.config.theme = "nord".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.config.theme, "dracula");
+        assert_eq!(app.theme_picker_original, None);
     }
 }

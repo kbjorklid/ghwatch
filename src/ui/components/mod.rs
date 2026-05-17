@@ -6,3 +6,4 @@ pub mod list;
 pub mod settings;
 pub mod status_bar;
 pub mod tab_bar;
+pub mod theme_picker;

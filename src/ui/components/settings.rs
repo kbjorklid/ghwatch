@@ -13,7 +13,7 @@ pub enum SettingAction {
     None,
     ToggleNerdFonts,
     ToggleStatusBar,
-    CycleTheme,
+    OpenThemePicker,
     ToggleColumn(crate::config::Column),
     ToggleQuery(usize),
     AddQuery,
@@ -25,7 +25,7 @@ pub fn get_setting_action(config: &AppConfig, index: usize) -> SettingAction {
         0 | 1 | 5 => SettingAction::None,
         2 => SettingAction::ToggleNerdFonts,
         3 => SettingAction::ToggleStatusBar,
-        4 => SettingAction::CycleTheme,
+        4 => SettingAction::OpenThemePicker,
         idx if (6..10).contains(&idx) => {
             let cols = [
                 crate::config::Column::Author,
@@ -111,7 +111,7 @@ pub fn render_settings(
 
     text.push(Line::from(""));
     text.push(Line::from(Span::styled(
-        " Queries (Space/Enter to toggle):",
+        " Queries (Space/Enter to toggle, e to edit, d to delete):",
         Style::default().fg(theme.title).add_modifier(Modifier::BOLD),
     )));
 
@@ -170,7 +170,7 @@ mod tests {
 
         assert!(matches!(get_setting_action(&config, 0), SettingAction::None));
         assert!(matches!(get_setting_action(&config, 2), SettingAction::ToggleNerdFonts));
-        assert!(matches!(get_setting_action(&config, 4), SettingAction::CycleTheme));
+        assert!(matches!(get_setting_action(&config, 4), SettingAction::OpenThemePicker));
         assert!(matches!(
             get_setting_action(&config, 6),
             SettingAction::ToggleColumn(crate::config::Column::Author)

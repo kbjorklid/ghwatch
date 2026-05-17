@@ -18,7 +18,9 @@ pub const fn active_tab(mode: &AppMode) -> usize {
         | AppMode::LogDetail
         | AppMode::AddQueryName
         | AppMode::AddQuerySearch
-        | AppMode::ConfirmQuery => 2,
+        | AppMode::ConfirmQuery
+        | AppMode::DeleteQueryConfirm
+        | AppMode::ThemePicker => 2,
     }
 }
 

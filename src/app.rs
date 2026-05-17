@@ -33,6 +33,8 @@ pub enum AppMode {
     AddQueryName,
     AddQuerySearch,
     ConfirmQuery,
+    DeleteQueryConfirm,
+    ThemePicker,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -86,6 +88,10 @@ where
     pub query_test_error: Option<String>,
     pub is_testing_query: bool,
     pub pr_timelines: HashMap<String, Vec<TimelineEvent>>,
+    pub theme_picker_index: usize,
+    pub theme_picker_original: Option<String>,
+    pub editing_query_index: Option<usize>,
+    pub deleting_query_index: Option<usize>,
 }
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
@@ -167,6 +173,10 @@ where
             query_test_error: None,
             is_testing_query: false,
             pr_timelines: HashMap::new(),
+            theme_picker_index: 0,
+            theme_picker_original: None,
+            editing_query_index: None,
+            deleting_query_index: None,
         })
     }
 }
@@ -257,6 +267,9 @@ where
                 query_test_results: self.query_test_results.as_deref(),
                 query_test_error: self.query_test_error.as_deref(),
                 is_testing_query: self.is_testing_query,
+                theme_picker_index: self.theme_picker_index,
+                editing_query_index: self.editing_query_index,
+                deleting_query_index: self.deleting_query_index,
             })?;
 
             if let Some(event) = self.event_rx.recv().await {

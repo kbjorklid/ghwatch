@@ -3,7 +3,7 @@ use crate::domain::pr::PullRequest;
 use crate::ui::components::{
     archive::render_archive, detail::render_detail, diagnostics::render_diagnostics,
     help::render_help, list::render_list, settings::render_settings, status_bar::render_status_bar,
-    tab_bar::render_tab_bar,
+    tab_bar::render_tab_bar, theme_picker::render_theme_picker,
 };
 use crate::ui::theme::Theme;
 use anyhow::Result;
@@ -42,6 +42,9 @@ pub struct DrawContext<'a> {
     pub query_test_results: Option<&'a [PullRequest]>,
     pub query_test_error: Option<&'a str>,
     pub is_testing_query: bool,
+    pub theme_picker_index: usize,
+    pub editing_query_index: Option<usize>,
+    pub deleting_query_index: Option<usize>,
 }
 
 impl<B: Backend> Renderer<B>
@@ -98,10 +101,22 @@ where
                 }
                 crate::app::AppMode::AddQueryName | crate::app::AppMode::AddQuerySearch => {
                     render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
-                    let title = if ctx.mode == &crate::app::AppMode::AddQueryName {
-                        " Enter Query Name "
-                    } else {
-                        " Enter Search Query "
+                    let is_editing = ctx.editing_query_index.is_some();
+                    let title = match ctx.mode {
+                        crate::app::AppMode::AddQueryName => {
+                            if is_editing {
+                                " Edit Query Name "
+                            } else {
+                                " Enter Query Name "
+                            }
+                        }
+                        _ => {
+                            if is_editing {
+                                " Edit Search Query "
+                            } else {
+                                " Enter Search Query "
+                            }
+                        }
                     };
                     let buffer = if ctx.mode == &crate::app::AppMode::AddQueryName {
                         ctx.query_name_buffer
@@ -122,13 +137,61 @@ where
                         Paragraph::new(buffer).block(block).style(Style::default().fg(theme.text));
                     f.render_widget(text, modal_area);
                 }
-                crate::app::AppMode::ConfirmQuery => {
+                crate::app::AppMode::ThemePicker => {
                     render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
+                    let modal = centered_rect(85, 90, f.area());
+                    f.render_widget(ratatui::widgets::Clear, modal);
+                    render_theme_picker(f, modal, ctx.theme_picker_index, &theme);
+                }
+                crate::app::AppMode::DeleteQueryConfirm => {
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
+
+                    let query_name = ctx
+                        .deleting_query_index
+                        .and_then(|i| ctx.config.queries.get(i))
+                        .map_or("this query", |q| q.name.as_str());
 
                     let block = Block::default()
                         .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.error))
+                        .title(" Delete Query? ")
+                        .title_style(Style::default().fg(theme.title));
+
+                    let modal_area = centered_rect(50, 30, f.area());
+                    f.render_widget(ratatui::widgets::Clear, modal_area);
+
+                    let text = vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled(" Delete \"", Style::default().fg(theme.text)),
+                            Span::styled(
+                                query_name.to_string(),
+                                Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled("\"?", Style::default().fg(theme.text)),
+                        ]),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            " (y)es / (n)o ",
+                            Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
+                        )),
+                    ];
+
+                    let paragraph = Paragraph::new(text).block(block);
+                    f.render_widget(paragraph, modal_area);
+                }
+                crate::app::AppMode::ConfirmQuery => {
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
+
+                    let confirm_title = if ctx.editing_query_index.is_some() {
+                        " Confirm Edit Query "
+                    } else {
+                        " Confirm New Query "
+                    };
+                    let block = Block::default()
+                        .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme.info))
-                        .title(" Confirm New Query ")
+                        .title(confirm_title)
                         .title_style(Style::default().fg(theme.title));
 
                     let modal_area = centered_rect(70, 60, f.area());
@@ -188,8 +251,13 @@ where
                         }
 
                         text.push(Line::from(""));
+                        let action_prompt = if ctx.editing_query_index.is_some() {
+                            " Save changes? "
+                        } else {
+                            " Add this query? "
+                        };
                         text.push(Line::from(vec![
-                            Span::styled(" Add this query? ", Style::default().fg(theme.text)),
+                            Span::styled(action_prompt, Style::default().fg(theme.text)),
                             Span::styled(
                                 " (y)es / (n)o ",
                                 Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
@@ -283,7 +351,7 @@ fn render_log_detail(f: &mut Frame, area: Rect, selected_index: usize, theme: &T
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -396,6 +464,9 @@ mod tests {
                 query_test_results: None,
                 query_test_error: None,
                 is_testing_query: false,
+                theme_picker_index: 0,
+                editing_query_index: None,
+                deleting_query_index: None,
             })
             .unwrap();
     }
