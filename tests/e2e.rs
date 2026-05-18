@@ -414,6 +414,121 @@ async fn test_archiving() {
 }
 
 #[tokio::test]
+async fn test_archived_pr_not_readded_by_poll() {
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let pr1 = create_test_pr("1", 1);
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_archive_pr().returning(|_| Ok(()));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-archive-no-readd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.is_first_sync = false;
+
+    // Archive the PR
+    let key_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_u).await;
+    assert_eq!(app.pr_list.items().len(), 0);
+    assert_eq!(app.archive_list.items().len(), 1);
+
+    // Simulate a poll returning the same PR (still matches the query on GitHub)
+    app.merge_prs(vec![pr1.clone()], "my-query").await;
+
+    assert_eq!(app.pr_list.items().len(), 0, "Archived PR must not reappear in active list");
+    assert_eq!(app.archive_list.items().len(), 1, "Archive should still contain the PR");
+}
+
+#[tokio::test]
+async fn test_archived_pr_removed_from_active_list_on_poll() {
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let pr1 = create_test_pr("1", 1);
+    let prs = vec![pr1.clone()];
+
+    state_repo.expect_load_state().returning(move || Ok(prs.clone()));
+    let archived_pr = pr1.clone();
+    state_repo.expect_load_archive().returning(move || Ok(vec![archived_pr.clone()]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-archive-cleanup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.is_first_sync = false;
+
+    // Inconsistent state: PR is in both pr_list (from load_state) and archive_list.
+    assert_eq!(app.pr_list.items().len(), 1);
+    assert_eq!(app.archive_list.items().len(), 1);
+
+    // A poll arrives - inconsistency should heal.
+    app.merge_prs(vec![pr1.clone()], "my-query").await;
+
+    assert_eq!(app.pr_list.items().len(), 0, "Archived PR must be removed from active list");
+}
+
+#[tokio::test]
+async fn test_follow_from_archive() {
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let pr1 = create_test_pr("1", 1);
+    let archived = pr1.clone();
+
+    state_repo.expect_load_state().returning(|| Ok(vec![]));
+    state_repo.expect_load_archive().returning(move || Ok(vec![archived.clone()]));
+    state_repo.expect_save_archive().returning(|_| Ok(()));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir()
+        .join(format!("ghwatch-test-follow-from-archive-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    // Switch to archive view
+    let key_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_l).await;
+    assert_eq!(app.mode, AppMode::Archive);
+    assert_eq!(app.archive_list.items().len(), 1);
+    assert_eq!(app.pr_list.items().len(), 0);
+
+    // Press 'f' to follow from archive
+    let key_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_f).await;
+
+    assert_eq!(app.archive_list.items().len(), 0, "PR should be gone from archive");
+    assert_eq!(app.pr_list.items().len(), 1, "PR should be in active list");
+    assert!(
+        app.pr_list.items()[0].matched_queries.iter().any(|q| q == "manual"),
+        "Followed PR should carry the 'manual' attribution so it survives the next poll"
+    );
+}
+
+#[tokio::test]
 async fn test_detail_fetching_on_navigation() {
     let mut github = MockGithubProvider::new();
     let mut state_repo = MockStateRepository::new();
@@ -1214,5 +1329,168 @@ async fn test_pr_dropped_when_query_stops_matching_after_initial_sync() {
         app.pr_list.items().len(),
         0,
         "PR dropped once it has no remaining query attribution"
+    );
+}
+
+// Regression: after marking a PR as seen, a subsequent poll that detects a new
+// PR (but returns the same data for the marked PR) must NOT bring the "needs
+// attention" reasons back on the marked PR.
+#[tokio::test]
+async fn test_mark_seen_survives_poll_with_new_pr_added() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    // PR A is the user's own PR with failing CI, attribution to query "main".
+    let mut pr_a = create_test_pr("A", 100);
+    pr_a.author = "alice".to_string();
+    pr_a.ci_status = CIStatus::Failing;
+    pr_a.matched_queries = vec!["main".to_string()];
+    pr_a.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+
+    let persisted = vec![pr_a.clone()];
+    state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+    github
+        .expect_fetch_pr_details()
+        .returning(|_, _| Err(anyhow::anyhow!("not used in this test")));
+    github.expect_fetch_timeline().returning(|_, _| Ok(vec![]));
+    github.expect_fetch_check_runs().returning(|_, _| Ok(vec![]));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-mark-seen-new-pr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+    app.config.current_user = "alice".to_string();
+
+    // Finish initial sync so subsequent merges are treated as post-startup.
+    app.handle_app_event(ghwatch::ui::events::AppEvent::InitialSyncDone).await;
+
+    // User marks PR A as seen — active_reasons should clear, last_seen_at set.
+    let key_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_m).await;
+    {
+        let pr = app.pr_list.items().iter().find(|p| p.id == "A").unwrap();
+        assert!(
+            pr.attention_state.active_reasons.is_empty(),
+            "active_reasons should be empty immediately after mark-as-seen"
+        );
+        assert!(
+            pr.attention_state.last_seen_at.is_some(),
+            "last_seen_at should be set after mark-as-seen"
+        );
+    }
+
+    // Poll returns PR A unchanged plus a brand-new PR B in the same query.
+    let pr_a_unchanged = {
+        let pr = app.pr_list.items().iter().find(|p| p.id == "A").unwrap().clone();
+        // Simulate what the API would return: no attention_state, no last_seen tracking.
+        PullRequest {
+            attention_state: AttentionState::default(),
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            matched_queries: Vec::new(),
+            ..pr
+        }
+    };
+    let mut pr_b = create_test_pr("B", 200);
+    pr_b.author = "bob".to_string();
+
+    app.merge_prs(vec![pr_a_unchanged, pr_b], "main").await;
+
+    let pr_a_after = app.pr_list.items().iter().find(|p| p.id == "A").unwrap();
+    assert!(
+        pr_a_after.attention_state.active_reasons.is_empty(),
+        "active_reasons must NOT come back after a poll that adds a different new PR; \
+         got {:?}",
+        pr_a_after.attention_state.active_reasons
+    );
+}
+
+// Regression: when a PR temporarily disappears from query results and later
+// reappears (e.g., due to GitHub search eventual consistency), the existing
+// mark-as-seen state must NOT be reset by treating the PR as brand-new.
+#[tokio::test]
+async fn test_mark_seen_survives_pr_disappear_and_reappear() {
+    use ghwatch::domain::attention::{AttentionState, TriggerReason};
+    use std::collections::HashSet;
+
+    let mut github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr_a = create_test_pr("A", 100);
+    pr_a.author = "alice".to_string();
+    pr_a.ci_status = CIStatus::Failing;
+    pr_a.matched_queries = vec!["main".to_string()];
+    pr_a.attention_state = AttentionState {
+        active_reasons: HashSet::from([TriggerReason::CiFailed]),
+        last_seen_at: None,
+        last_comment_at: None,
+    };
+
+    let persisted = vec![pr_a.clone()];
+    state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+    github
+        .expect_fetch_pr_details()
+        .returning(|_, _| Err(anyhow::anyhow!("not used in this test")));
+    github.expect_fetch_timeline().returning(|_, _| Ok(vec![]));
+    github.expect_fetch_check_runs().returning(|_, _| Ok(vec![]));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-mark-seen-flicker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+    app.config.current_user = "alice".to_string();
+
+    app.handle_app_event(ghwatch::ui::events::AppEvent::InitialSyncDone).await;
+
+    let key_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+    ghwatch::input::handle_key(&mut app, key_m).await;
+    assert!(
+        app.pr_list.items()[0].attention_state.active_reasons.is_empty(),
+        "active_reasons should be empty after mark-as-seen"
+    );
+
+    // PR A vanishes from query results (e.g., transient search eventual consistency).
+    app.merge_prs(vec![], "main").await;
+
+    // PR A comes back the very next cycle, still failing CI.
+    let mut pr_a_return = pr_a.clone();
+    pr_a_return.attention_state = AttentionState::default();
+    pr_a_return.matched_queries = Vec::new();
+    app.merge_prs(vec![pr_a_return], "main").await;
+
+    let pr_a_after = app
+        .pr_list
+        .items()
+        .iter()
+        .find(|p| p.id == "A")
+        .expect("PR A should be present after reappearing in the query");
+    assert!(
+        pr_a_after.attention_state.active_reasons.is_empty(),
+        "mark-as-seen must persist across transient drop/reappear; \
+         got reasons {:?}",
+        pr_a_after.attention_state.active_reasons
     );
 }

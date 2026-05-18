@@ -50,6 +50,7 @@ pub fn render_help(f: &mut Frame, area: Rect, theme: &Theme) {
             "Archive View",
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         )]),
+        Line::from("  f            : Follow selected PR (move back to PR list)"),
         Line::from("  d            : Permanently delete selected PR"),
         Line::from(""),
         Line::from(vec![Span::styled(

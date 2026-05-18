@@ -89,6 +89,13 @@ where
     pub query_test_error: Option<String>,
     pub is_testing_query: bool,
     pub pr_timelines: HashMap<String, Vec<TimelineEvent>>,
+    /// User-facing state of PRs dropped from `pr_list` during this session
+    /// (because every query that matched them stopped doing so). Indexed by
+    /// PR id. When a previously-dropped PR reappears in a poll, this cache
+    /// is used to preserve mark-as-seen status, attention timestamps, and
+    /// comment baselines so the user does not get the "needs attention" dot
+    /// back from a transient drop/reappear.
+    pub dropped_pr_memory: HashMap<String, PullRequest>,
     pub theme_picker_index: usize,
     pub theme_picker_original: Option<String>,
     pub editing_query_index: Option<usize>,
@@ -175,6 +182,7 @@ where
             query_test_error: None,
             is_testing_query: false,
             pr_timelines: HashMap::new(),
+            dropped_pr_memory: HashMap::new(),
             theme_picker_index: 0,
             theme_picker_original: None,
             editing_query_index: None,
@@ -429,7 +437,13 @@ where
                 old_pr.attention_state = attn;
             }
         } else {
+            let archived_ids: std::collections::HashSet<String> =
+                self.archive_list.items().iter().map(|p| p.id.clone()).collect();
+            let new_prs: Vec<PullRequest> =
+                new_prs.into_iter().filter(|p| !archived_ids.contains(&p.id)).collect();
+
             let mut current_prs = self.pr_list.items().to_vec();
+            current_prs.retain(|pr| !archived_ids.contains(&pr.id));
             let new_ids: std::collections::HashSet<String> =
                 new_prs.iter().map(|p| p.id.clone()).collect();
 
@@ -495,6 +509,34 @@ where
                     } else if !old_pr.matched_queries.iter().any(|q| q == query_name) {
                         old_pr.matched_queries.push(query_name.to_string());
                     }
+                } else if let Some(cached) = self.dropped_pr_memory.remove(&new_pr.id) {
+                    // Reappearance after a transient drop: treat as a
+                    // continuation of the cached state, not first appearance.
+                    let timeline: &[TimelineEvent] =
+                        self.pr_timelines.get(&new_pr.id).map_or(&[], Vec::as_slice);
+                    let new_attn = attention::evaluate(
+                        Some(&cached.attention_state),
+                        Some(&cached),
+                        &new_pr,
+                        timeline,
+                        &self.config.current_user,
+                        Utc::now(),
+                        &self.config.attention,
+                    );
+                    if !self.is_first_sync {
+                        self.notifier.notify_pr_update(&cached, &new_pr);
+                    }
+                    let mut pr = new_pr;
+                    pr.last_seen_at = cached.last_seen_at.clone();
+                    pr.last_seen_unresolved_count = cached.last_seen_unresolved_count;
+                    pr.last_seen_total_resolvable_count = cached.last_seen_total_resolvable_count;
+                    pr.last_seen_conversational_count = cached.last_seen_conversational_count;
+                    pr.attention_state = new_attn;
+                    if !pr.matched_queries.iter().any(|q| q == query_name) {
+                        pr.matched_queries.push(query_name.to_string());
+                    }
+                    current_prs.push(pr);
+                    self.trigger_details_fetch().await;
                 } else {
                     let new_attn = attention::evaluate(
                         None,
@@ -527,6 +569,11 @@ where
                 }
             }
             if !self.is_first_sync {
+                for pr in &current_prs {
+                    if pr.matched_queries.is_empty() {
+                        self.dropped_pr_memory.insert(pr.id.clone(), pr.clone());
+                    }
+                }
                 current_prs.retain(|pr| !pr.matched_queries.is_empty());
             }
 

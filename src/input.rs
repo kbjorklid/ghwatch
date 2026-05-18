@@ -182,6 +182,19 @@ where
         {
             let _ = app.state_repo.save_archive(app.archive_list.items());
         }
+        KeyCode::Char('f')
+            if app.is_writer
+                && app.archive_list.selected_index() < app.archive_list.items().len() =>
+        {
+            if let Some(mut pr) = app.archive_list.remove_selected() {
+                if !pr.matched_queries.iter().any(|q| q == "manual") {
+                    pr.matched_queries.push("manual".to_string());
+                }
+                app.pr_list.insert_at_front(pr);
+                let _ = app.state_repo.save_archive(app.archive_list.items());
+                let _ = app.state_repo.save_state(app.pr_list.items());
+            }
+        }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => switch_to_prs(app),
         KeyCode::Right | KeyCode::Char('l') => switch_to_settings(app),
         KeyCode::Char('q') => app.should_quit = true,

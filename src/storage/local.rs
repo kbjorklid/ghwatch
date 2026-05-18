@@ -64,7 +64,7 @@ impl StateRepository for FileStateRepository {
         for path in paths {
             if path.exists()
                 && let Ok(content) = fs::read_to_string(&path)
-                && let Ok(archive) = toml::from_str::<StateFile>(&content)
+                && let Ok(archive) = parse_archive_content(&content)
             {
                 all_prs.extend(archive.prs);
             }
@@ -77,9 +77,12 @@ impl StateRepository for FileStateRepository {
     }
 
     fn save_archive(&self, archive: &[PullRequest]) -> Result<()> {
-        let archive_data = StateFile { prs: archive.to_vec() };
-
-        let content = toml::to_string(&archive_data).context("Failed to serialize archive")?;
+        let content = if archive.is_empty() {
+            String::new()
+        } else {
+            let archive_data = StateFile { prs: archive.to_vec() };
+            toml::to_string(&archive_data).context("Failed to serialize archive")?
+        };
 
         fs::write(&self.archive_path, content).context("Failed to write archive file")?;
 
@@ -98,8 +101,6 @@ impl StateRepository for FileStateRepository {
     }
 
     fn archive_pr(&self, pr: PullRequest) -> Result<()> {
-        use std::io::Write;
-
         if self.archive_path.exists()
             && let Ok(metadata) = fs::metadata(&self.archive_path)
             && metadata.len() > 1024 * 1024
@@ -108,22 +109,46 @@ impl StateRepository for FileStateRepository {
             crate::storage::archive::rotate(&self.archive_path)?;
         }
 
-        let archive_data = StateFile { prs: vec![pr] };
+        // Read-modify-write keeps the file as a single valid TOML document.
+        // Earlier versions used naive append, which broke if the existing file
+        // started with an inline `prs = []` (written by save_archive on an
+        // empty archive). The resulting file failed to parse, and every load
+        // silently dropped the archive.
+        let mut existing = if self.archive_path.exists()
+            && let Ok(content) = fs::read_to_string(&self.archive_path)
+        {
+            parse_archive_content(&content).map(|s| s.prs).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        existing.push(pr);
 
-        let content =
-            toml::to_string(&archive_data).context("Failed to serialize archive entry")?;
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.archive_path)
-            .context("Failed to open archive file for appending")?;
-
-        file.write_all(content.as_bytes())?;
-        file.write_all(b"\n")?;
+        let archive_data = StateFile { prs: existing };
+        let content = toml::to_string(&archive_data).context("Failed to serialize archive")?;
+        fs::write(&self.archive_path, content).context("Failed to write archive file")?;
 
         Ok(())
     }
+}
+
+fn parse_archive_content(content: &str) -> Result<StateFile> {
+    if let Ok(parsed) = toml::from_str::<StateFile>(content) {
+        return Ok(parsed);
+    }
+
+    // Recovery: older versions could leave a leading `prs = []` line followed
+    // by appended `[[prs]]` blocks, which is invalid TOML. Strip the inline
+    // declaration and retry so existing data isn't silently lost.
+    let mut lines = content.lines();
+    let first = lines.next().unwrap_or("").trim_start();
+    if first.starts_with("prs = ") || first.starts_with("prs=") {
+        let rest: String = lines.collect::<Vec<_>>().join("\n");
+        if let Ok(parsed) = toml::from_str::<StateFile>(&rest) {
+            return Ok(parsed);
+        }
+    }
+
+    Err(anyhow::anyhow!("archive content not parseable"))
 }
 
 #[cfg(test)]
@@ -229,6 +254,44 @@ mod tests {
 
         let loaded_archive = repo.load_archive().unwrap();
         assert!(loaded_archive.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_save_archive_empty_does_not_corrupt_subsequent_archive_pr() {
+        // Regression: save_archive with [] used to write `prs = []` inline,
+        // and a subsequent archive_pr appended `[[prs]]` table-arrays. The
+        // resulting file was invalid TOML and load_archive silently dropped
+        // the data.
+        let dir = setup_temp_dir();
+        let repo = FileStateRepository::new(&dir);
+
+        repo.save_archive(&[]).unwrap();
+        repo.archive_pr(create_test_pr("1")).unwrap();
+        repo.archive_pr(create_test_pr("2")).unwrap();
+
+        let loaded = repo.load_archive().unwrap();
+        assert_eq!(loaded.len(), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_load_archive_recovers_from_legacy_corruption() {
+        // Files left over from an older binary may start with `prs = []`
+        // followed by appended `[[prs]]` blocks. Recovery strips the leading
+        // inline declaration and reparses so existing archives aren't lost.
+        let dir = setup_temp_dir();
+        let archive_path = dir.join("archive.toml");
+
+        let pr = create_test_pr("recovered");
+        let body = toml::to_string(&StateFile { prs: vec![pr] }).unwrap();
+        let corrupted = format!("prs = []\n{body}");
+        fs::write(&archive_path, corrupted).unwrap();
+
+        let repo = FileStateRepository::new(&dir);
+        let loaded = repo.load_archive().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "recovered");
         let _ = fs::remove_dir_all(dir);
     }
 
