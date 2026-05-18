@@ -9,7 +9,6 @@ pub enum AppEvent {
     CiStatusLoaded { repo: String, pr_number: u32, checks: Vec<CheckRun> },
     TimelineLoaded { repo: String, pr_number: u32, events: Vec<TimelineEvent> },
     ConfigReloaded(AppConfig),
-    StateReloaded(Vec<PullRequest>),
     Error(String),
     PollCycleStarted,
     InitialSyncDone,

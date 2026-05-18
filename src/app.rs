@@ -5,7 +5,7 @@ use crate::domain::pr::{CheckRun, PullRequest, TimelineEvent};
 use crate::github::client::GhCliClient;
 use crate::polling::worker::PollingWorker;
 use crate::storage::get_data_dir;
-use crate::storage::local::FileStateRepository;
+use crate::storage::sqlite::SqliteStateRepository;
 use crate::ui::events::AppEvent;
 use crate::ui::render::Renderer;
 use anyhow::Result;
@@ -17,8 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-
-use crate::storage::lock::FileLock;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AppMode {
@@ -68,15 +66,12 @@ where
     pub current_checks: Vec<CheckRun>,
     pub current_timeline: Vec<TimelineEvent>,
     pub config: AppConfig,
-    pub is_writer: bool,
-    _lock: Option<FileLock>,
     pub mode: AppMode,
     pub sort_mode: SortMode,
     pub detail_focused: bool,
     pub detail_scroll: u16,
     pub input_buffer: String,
     pub config_watcher: Option<crate::config::watcher::ConfigWatcher>,
-    pub state_watcher: Option<crate::config::watcher::StateWatcher>,
     pub notifier: Box<dyn crate::domain::ports::NotificationService>,
     pub last_refresh: Option<std::time::Instant>,
     pub polling_task: Option<tokio::task::JoinHandle<()>>,
@@ -110,7 +105,7 @@ impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
         let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
 
         let github = Arc::new(GhCliClient::new());
-        let state_repo = Arc::new(FileStateRepository::new(&data_dir));
+        let state_repo = Arc::new(SqliteStateRepository::new(&data_dir)?);
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
         Self::with_deps(github, state_repo, &config_dir, &data_dir, backend)
@@ -133,15 +128,6 @@ where
         let config = AppConfig::load(&config_path).unwrap_or_default();
 
         let _ = std::fs::create_dir_all(data_dir);
-        let lock_path = data_dir.join(".lock");
-
-        let (is_writer, lock) = match FileLock::acquire_exclusive(&lock_path) {
-            Ok(lock) => (true, Some(lock)),
-            Err(_) => match FileLock::acquire_shared(&lock_path) {
-                Ok(lock) => (false, Some(lock)),
-                Err(_) => (false, None),
-            },
-        };
 
         let prs = state_repo.load_state().unwrap_or_default();
         let archived_prs = state_repo.load_archive().unwrap_or_default();
@@ -161,15 +147,12 @@ where
             current_checks: Vec::new(),
             current_timeline: Vec::new(),
             config,
-            is_writer,
-            _lock: lock,
             mode: AppMode::Normal,
             sort_mode: SortMode::Updated,
             detail_focused: false,
             detail_scroll: 0,
             input_buffer: String::new(),
             config_watcher: None,
-            state_watcher: None,
             notifier,
             last_refresh: None,
             polling_task: None,
@@ -214,19 +197,13 @@ where
             }
         }
 
-        if self.is_writer {
-            let polling_worker =
-                PollingWorker::new(self.config.clone(), self.github.clone(), self.event_tx.clone());
-            self.polling_task = Some(tokio::spawn(polling_worker.start()));
-        } else {
-            let data_dir = get_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-            let state_path = data_dir.join("state.toml");
-            if state_path.exists() {
-                self.state_watcher =
-                    crate::config::watcher::StateWatcher::new(&state_path, self.event_tx.clone())
-                        .ok();
-            }
-        }
+        let polling_worker = PollingWorker::new(
+            self.config.clone(),
+            self.github.clone(),
+            self.state_repo.clone(),
+            self.event_tx.clone(),
+        );
+        self.polling_task = Some(tokio::spawn(polling_worker.start()));
 
         // Check gh CLI
         let gh_check = Command::new("gh").arg("--version").output().await;
@@ -305,9 +282,7 @@ where
             }
             AppEvent::PrsUpdated { query_name, prs } => {
                 self.merge_prs(prs, &query_name).await;
-                if self.is_writer {
-                    let _ = self.state_repo.save_state(self.pr_list.items());
-                }
+                let _ = self.state_repo.save_state(self.pr_list.items());
             }
             AppEvent::CiStatusLoaded { repo, pr_number, checks } => {
                 if let Some(selected) = self.pr_list.selected_pr()
@@ -338,10 +313,7 @@ where
                         &self.config.attention,
                     );
                     self.pr_list.items_mut()[idx].attention_state = new_attn;
-
-                    if self.is_writer {
-                        let _ = self.state_repo.save_state(self.pr_list.items());
-                    }
+                    let _ = self.state_repo.save_state(self.pr_list.items());
                 }
 
                 if let Some(selected) = self.pr_list.selected_pr()
@@ -366,17 +338,11 @@ where
                 if pruned.len() != self.pr_list.items().len() {
                     self.pr_list.set_prs(pruned);
                     self.sort_prs();
-                    if self.is_writer {
-                        let _ = self.state_repo.save_state(self.pr_list.items());
-                    }
+                    let _ = self.state_repo.save_state(self.pr_list.items());
                 }
             }
             AppEvent::ConfigReloaded(new_config) => {
                 self.handle_config_reload(new_config);
-            }
-            AppEvent::StateReloaded(new_prs) => {
-                self.pr_list.set_prs(new_prs);
-                self.sort_prs();
             }
             AppEvent::Error(msg) => {
                 self.error_message = Some(msg);
@@ -400,14 +366,16 @@ where
 
     pub fn handle_config_reload(&mut self, new_config: AppConfig) {
         self.config = new_config;
-        if self.is_writer {
-            if let Some(task) = self.polling_task.take() {
-                task.abort();
-            }
-            let polling_worker =
-                PollingWorker::new(self.config.clone(), self.github.clone(), self.event_tx.clone());
-            self.polling_task = Some(tokio::spawn(polling_worker.start()));
+        if let Some(task) = self.polling_task.take() {
+            task.abort();
         }
+        let polling_worker = PollingWorker::new(
+            self.config.clone(),
+            self.github.clone(),
+            self.state_repo.clone(),
+            self.event_tx.clone(),
+        );
+        self.polling_task = Some(tokio::spawn(polling_worker.start()));
     }
 
     pub async fn merge_prs(&mut self, new_prs: Vec<PullRequest>, query_name: &str) {
@@ -436,6 +404,11 @@ where
                 old_pr.last_seen_conversational_count = seen_conv;
                 old_pr.attention_state = attn;
             }
+        } else if query_name == "db-reload" {
+            // Data came from DB (another instance is the poll winner); just update in-memory
+            // without triggering notifications — the winner already persisted it.
+            self.pr_list.set_prs(new_prs);
+            self.sort_prs();
         } else {
             let archived_ids: std::collections::HashSet<String> =
                 self.archive_list.items().iter().map(|p| p.id.clone()).collect();
@@ -510,8 +483,6 @@ where
                         old_pr.matched_queries.push(query_name.to_string());
                     }
                 } else if let Some(cached) = self.dropped_pr_memory.remove(&new_pr.id) {
-                    // Reappearance after a transient drop: treat as a
-                    // continuation of the cached state, not first appearance.
                     let timeline: &[TimelineEvent] =
                         self.pr_timelines.get(&new_pr.id).map_or(&[], Vec::as_slice);
                     let new_attn = attention::evaluate(
@@ -560,9 +531,6 @@ where
                 }
             }
 
-            // For PRs currently attributed to this query but missing from new result,
-            // remove the attribution. Drop the PR if it has no remaining attributions
-            // (but only after the initial sync, so other queries get a chance to attribute).
             for pr in &mut current_prs {
                 if !new_ids.contains(&pr.id) && pr.matched_queries.iter().any(|q| q == query_name) {
                     pr.matched_queries.retain(|q| q != query_name);
@@ -584,10 +552,6 @@ where
     }
 
     pub fn check_auto_unfollow(&mut self) {
-        if !self.is_writer {
-            return;
-        }
-
         let timeout = self.config.unfollow_timeout_mins;
         let mut to_remove = Vec::new();
 
@@ -597,7 +561,6 @@ where
             }
         }
 
-        // Remove from highest index to lowest to avoid index shifts
         let mut current_prs = self.pr_list.items().to_vec();
         for &i in to_remove.iter().rev() {
             let pr = current_prs.remove(i);
@@ -618,7 +581,6 @@ where
 
         let mut prs = self.pr_list.items().to_vec();
         prs.sort_by(|a, b| {
-            // 1. Group sort
             use crate::config::GroupMode;
             let group_cmp = match group_mode {
                 GroupMode::None => std::cmp::Ordering::Equal,
@@ -628,7 +590,7 @@ where
                 GroupMode::MyVsOther => {
                     let a_mine = a.author == config_user;
                     let b_mine = b.author == config_user;
-                    b_mine.cmp(&a_mine) // true comes before false
+                    b_mine.cmp(&a_mine)
                 }
             };
 
@@ -636,7 +598,6 @@ where
                 return group_cmp;
             }
 
-            // 2. Secondary sort
             match sort_mode {
                 SortMode::Updated => b.updated_at.cmp(&a.updated_at),
                 SortMode::Created => b.created_at.cmp(&a.created_at),
@@ -690,6 +651,7 @@ where
             });
         }
     }
+
     pub async fn trigger_details_fetch(&mut self) {
         if let Some(pr) = self.pr_list.selected_pr() {
             let tx = self.event_tx.clone();
@@ -782,6 +744,7 @@ mod tests {
             fn save_archive(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
             fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
             fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
+            fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
         }
     }
 
@@ -842,29 +805,23 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 24);
 
         let mut app = App::with_deps(github, state_repo, &config_dir, &data_dir, backend).unwrap();
-        app.is_writer = true;
 
         let mut notifier = MockNotifier::new();
-        // Should NOT be called during first sync
         notifier.expect_notify_new_pr().times(0);
-        // Should be called AFTER initial sync
         notifier.expect_notify_new_pr().times(1).returning(|_| ());
 
         app.notifier = Box::new(notifier);
 
         let pr = create_test_pr("1", CIStatus::Pending);
 
-        // 1. First sync: Should NOT notify
         app.handle_app_event(AppEvent::PrsUpdated {
             query_name: "test".to_string(),
             prs: vec![pr.clone()],
         })
         .await;
 
-        // 2. Initial sync done
         app.handle_app_event(AppEvent::InitialSyncDone).await;
 
-        // 3. Subsequent update (new PR): SHOULD notify
         let pr2 = create_test_pr("2", CIStatus::Pending);
         app.handle_app_event(AppEvent::PrsUpdated {
             query_name: "test".to_string(),

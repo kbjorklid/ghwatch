@@ -1,9 +1,7 @@
 use directories::ProjectDirs;
 use std::path::PathBuf;
 
-pub mod archive;
-pub mod local;
-pub mod lock;
+pub mod sqlite;
 
 #[must_use]
 pub fn get_data_dir() -> Option<PathBuf> {

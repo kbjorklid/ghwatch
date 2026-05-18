@@ -21,6 +21,7 @@ pub trait StateRepository: Send + Sync {
     fn load_archive(&self) -> Result<Vec<PullRequest>>;
     fn save_archive(&self, archive: &[PullRequest]) -> Result<()>;
     fn archive_pr(&self, pr: PullRequest) -> Result<()>;
+    fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> Result<bool>;
 }
 
 pub trait NotificationService: Send + Sync {
