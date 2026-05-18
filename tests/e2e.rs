@@ -61,6 +61,7 @@ fn create_test_pr(id: &str, number: u32) -> PullRequest {
         requested_reviewers: vec![],
         reviewers: vec![],
         is_draft: false,
+        matched_queries: Vec::new(),
         last_seen_at: None,
         last_seen_unresolved_count: 0,
         last_seen_total_resolvable_count: 0,
@@ -126,7 +127,7 @@ async fn test_navigation_and_mark_as_read() {
     pr2_github.conversational_count = 2;
     pr2_github.updated_at = "2024-05-01T12:00:00Z".to_string();
 
-    app.merge_prs(vec![pr1.clone(), pr2_github], false).await;
+    app.merge_prs(vec![pr1.clone(), pr2_github], "test").await;
 
     let pr2_final = app.pr_list.items().iter().find(|p| p.id == "2").unwrap();
     assert_eq!(pr2_final.last_seen_unresolved_count, 2);
@@ -373,7 +374,7 @@ async fn test_manual_follow() {
     if let Ok(ghwatch::ui::events::AppEvent::PrsUpdated { prs, query_name }) =
         app.event_rx.try_recv()
     {
-        app.merge_prs(prs, query_name == "detail").await;
+        app.merge_prs(prs, &query_name).await;
     }
 
     assert_eq!(app.pr_list.items().len(), 1);
@@ -498,7 +499,7 @@ async fn test_attention_ci_failed_fires_on_transition() {
     pr1_failing.updated_at = "2024-05-01T11:00:00Z".to_string();
 
     app.is_first_sync = false;
-    app.merge_prs(vec![pr1_failing], false).await;
+    app.merge_prs(vec![pr1_failing], "test").await;
 
     use ghwatch::domain::attention::TriggerReason;
     let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
@@ -855,7 +856,7 @@ async fn test_converted_to_draft_clears_review_requested() {
     pr1_draft.updated_at = "2024-05-01T11:00:00Z".to_string();
 
     app.is_first_sync = false;
-    app.merge_prs(vec![pr1_draft], false).await;
+    app.merge_prs(vec![pr1_draft], "test").await;
 
     let pr = app.pr_list.items().iter().find(|p| p.id == "1").unwrap();
     assert!(
@@ -1124,11 +1125,94 @@ async fn test_saved_state_without_attention_fields_treated_as_first_appearance()
     github_pr.ci_status = CIStatus::Failing;
 
     // is_first_sync is still true here; merge_prs should treat the PR as first appearance
-    app.merge_prs(vec![github_pr], false).await;
+    app.merge_prs(vec![github_pr], "test").await;
 
     let pr = app.pr_list.items().iter().find(|p| p.id == "20").unwrap();
     assert!(
         pr.attention_state.active_reasons.contains(&TriggerReason::CiFailed),
         "CiFailed should fire retroactively for PR with no prior attention state"
+    );
+}
+
+#[tokio::test]
+async fn test_restrictive_query_drops_unmatched_prs_after_initial_sync() {
+    // Persisted state has 3 PRs (legacy: no matched_queries).
+    // The query now only returns PR 1. After InitialSyncDone, PRs 2 and 3
+    // — never attributed to any query — should be dropped from the list.
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let pr1 = create_test_pr("1", 1);
+    let pr2 = create_test_pr("2", 2);
+    let pr3 = create_test_pr("3", 3);
+    let persisted = vec![pr1.clone(), pr2, pr3];
+
+    state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("ghwatch-test-restrictive-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    assert_eq!(app.pr_list.items().len(), 3, "all 3 PRs loaded from persisted state");
+
+    app.merge_prs(vec![pr1.clone()], "main").await;
+    assert_eq!(
+        app.pr_list.items().len(),
+        3,
+        "while is_first_sync is true, unattributed PRs stay (other queries may still match them)"
+    );
+
+    app.handle_app_event(ghwatch::ui::events::AppEvent::InitialSyncDone).await;
+
+    assert_eq!(
+        app.pr_list.items().len(),
+        1,
+        "after InitialSyncDone, PRs not matched by any query are dropped"
+    );
+    assert_eq!(app.pr_list.items()[0].id, "1");
+}
+
+#[tokio::test]
+async fn test_pr_dropped_when_query_stops_matching_after_initial_sync() {
+    // PR 1 is attributed to query "main". After initial sync completes,
+    // if query "main" no longer returns PR 1, it should be dropped.
+    let github = MockGithubProvider::new();
+    let mut state_repo = MockStateRepository::new();
+
+    let mut pr1 = create_test_pr("1", 1);
+    pr1.matched_queries = vec!["main".to_string()];
+
+    let persisted = vec![pr1];
+    state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
+    state_repo.expect_load_archive().returning(|| Ok(vec![]));
+    state_repo.expect_save_state().returning(|_| Ok(()));
+
+    let temp_dir = std::env::temp_dir().join(format!("ghwatch-test-drop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let backend = TestBackend::new(80, 24);
+    let mut app =
+        App::with_deps(Arc::new(github), Arc::new(state_repo), &temp_dir, &temp_dir, backend)
+            .unwrap();
+
+    app.handle_app_event(ghwatch::ui::events::AppEvent::InitialSyncDone).await;
+    assert_eq!(app.pr_list.items().len(), 1);
+
+    // Query polls and returns empty — PR 1 had "main" attribution but is no longer matched.
+    app.merge_prs(vec![], "main").await;
+
+    assert_eq!(
+        app.pr_list.items().len(),
+        0,
+        "PR dropped once it has no remaining query attribution"
     );
 }

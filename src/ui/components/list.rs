@@ -94,26 +94,34 @@ fn render_pr_item(
         Span::raw(" ")
     };
 
-    let status_color = match pr.status {
-        crate::domain::pr::PRStatus::Open => theme.success,
-        crate::domain::pr::PRStatus::Merged => theme.info,
-        crate::domain::pr::PRStatus::Closed => theme.gray,
+    let (status_str, status_color) = if pr.is_draft {
+        (" Draft ".to_string(), theme.gray)
+    } else {
+        let color = match pr.status {
+            crate::domain::pr::PRStatus::Open => theme.success,
+            crate::domain::pr::PRStatus::Merged => theme.info,
+            crate::domain::pr::PRStatus::Closed => theme.gray,
+        };
+        (format!(" {} ", pr.status), color)
     };
 
-    let review_status_color = match pr.review_status {
-        crate::domain::pr::ReviewStatus::Approved => theme.success,
-        crate::domain::pr::ReviewStatus::ChangesRequested => theme.error,
-        crate::domain::pr::ReviewStatus::Pending => theme.warning,
+    let (review_status_str, review_status_color) = if pr.is_draft {
+        (" - ".to_string(), theme.gray)
+    } else {
+        let color = match pr.review_status {
+            crate::domain::pr::ReviewStatus::Approved => theme.success,
+            crate::domain::pr::ReviewStatus::ChangesRequested => theme.error,
+            crate::domain::pr::ReviewStatus::Pending => theme.warning,
+        };
+        (format!(" {} ", pr.review_status), color)
     };
 
     let (mergeable_badge, mergeable_color) = match pr.mergeable {
         crate::domain::pr::MergeableStatus::Mergeable => (" [M] ", theme.success),
         crate::domain::pr::MergeableStatus::Conflicting => (" [C] ", theme.error),
+        crate::domain::pr::MergeableStatus::BlockedByRequirements => (" [R] ", theme.warning),
         crate::domain::pr::MergeableStatus::Unknown => (" [?] ", theme.gray),
     };
-
-    let status_str = format!(" {} ", pr.status);
-    let review_status_str = format!(" {} ", pr.review_status);
     let id_str = format!("#{} ", pr.number);
 
     // area.width - 2 (borders) - 1 (selection bar) - 2 (dot) - id_str - status - review - mergeable
@@ -270,6 +278,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -335,6 +344,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -384,6 +394,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -401,6 +412,60 @@ mod tests {
         assert!(
             !line2_content.contains("Pending"),
             "Line 2 should not contain review status 'Pending'. Content: {line2_content}"
+        );
+    }
+
+    #[test]
+    fn test_render_pr_item_draft_shows_draft_status_and_dashed_review() {
+        let pr = PullRequest {
+            id: "1".to_string(),
+            number: 1,
+            title: "Test PR".to_string(),
+            author: "author".to_string(),
+            repo: "repo".to_string(),
+            status: PRStatus::Open,
+            created_at: "1h".to_string(),
+            updated_at: "1h".to_string(),
+            additions: 0,
+            deletions: 0,
+            review_status: ReviewStatus::Pending,
+            comment_count: 0,
+            unresolved_count: 0,
+            total_resolvable_count: 0,
+            conversational_count: 0,
+            ci_status: CIStatus::Passing,
+            mergeable: MergeableStatus::Unknown,
+            head_ref: String::new(),
+            body: String::new(),
+            url: String::new(),
+            requested_reviewers: vec![],
+            reviewers: vec![],
+            is_draft: true,
+            matched_queries: Vec::new(),
+            last_seen_at: None,
+            last_seen_unresolved_count: 0,
+            last_seen_total_resolvable_count: 0,
+            last_seen_conversational_count: 0,
+            attention_state: AttentionState::default(),
+        };
+        let config = AppConfig::default();
+        let theme = Theme::dark();
+        let icons = Icons::new(false);
+
+        let lines = render_pr_item(&pr, false, &config, &theme, &icons, 120);
+        let line1_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+
+        assert!(
+            line1_content.contains("Draft"),
+            "Draft PR should show 'Draft' status. Content: {line1_content}"
+        );
+        assert!(
+            !line1_content.contains("Open"),
+            "Draft PR should not show 'Open' status. Content: {line1_content}"
+        );
+        assert!(
+            !line1_content.contains("Pending"),
+            "Draft PR should not show 'Pending' review. Content: {line1_content}"
         );
     }
 
@@ -430,6 +495,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -479,6 +545,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None, // old field still None → old code would show ● (is_unread=true)
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -531,6 +598,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -581,6 +649,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: Some("some-time".to_string()),
             last_seen_unresolved_count: 1,
             last_seen_total_resolvable_count: 1,
@@ -632,6 +701,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,

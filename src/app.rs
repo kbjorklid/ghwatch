@@ -35,6 +35,7 @@ pub enum AppMode {
     ConfirmQuery,
     DeleteQueryConfirm,
     ThemePicker,
+    EditMaxAgeDays,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -92,6 +93,7 @@ where
     pub theme_picker_original: Option<String>,
     pub editing_query_index: Option<usize>,
     pub deleting_query_index: Option<usize>,
+    pub max_age_days_buffer: String,
 }
 
 impl App<ratatui::backend::CrosstermBackend<std::io::Stdout>> {
@@ -177,6 +179,7 @@ where
             theme_picker_original: None,
             editing_query_index: None,
             deleting_query_index: None,
+            max_age_days_buffer: String::new(),
         })
     }
 }
@@ -270,6 +273,7 @@ where
                 theme_picker_index: self.theme_picker_index,
                 editing_query_index: self.editing_query_index,
                 deleting_query_index: self.deleting_query_index,
+                max_age_days_buffer: &self.max_age_days_buffer,
             })?;
 
             if let Some(event) = self.event_rx.recv().await {
@@ -292,7 +296,7 @@ where
                 }
             }
             AppEvent::PrsUpdated { query_name, prs } => {
-                self.merge_prs(prs, query_name == "detail").await;
+                self.merge_prs(prs, &query_name).await;
                 if self.is_writer {
                     let _ = self.state_repo.save_state(self.pr_list.items());
                 }
@@ -344,6 +348,20 @@ where
             }
             AppEvent::InitialSyncDone => {
                 self.is_first_sync = false;
+                let pruned: Vec<PullRequest> = self
+                    .pr_list
+                    .items()
+                    .iter()
+                    .filter(|p| !p.matched_queries.is_empty())
+                    .cloned()
+                    .collect();
+                if pruned.len() != self.pr_list.items().len() {
+                    self.pr_list.set_prs(pruned);
+                    self.sort_prs();
+                    if self.is_writer {
+                        let _ = self.state_repo.save_state(self.pr_list.items());
+                    }
+                }
             }
             AppEvent::ConfigReloaded(new_config) => {
                 self.handle_config_reload(new_config);
@@ -384,7 +402,8 @@ where
         }
     }
 
-    pub async fn merge_prs(&mut self, new_prs: Vec<PullRequest>, is_detail: bool) {
+    pub async fn merge_prs(&mut self, new_prs: Vec<PullRequest>, query_name: &str) {
+        let is_detail = query_name == "detail";
         if !is_detail {
             self.last_refresh = Some(std::time::Instant::now());
         }
@@ -411,6 +430,9 @@ where
             }
         } else {
             let mut current_prs = self.pr_list.items().to_vec();
+            let new_ids: std::collections::HashSet<String> =
+                new_prs.iter().map(|p| p.id.clone()).collect();
+
             for new_pr in new_prs {
                 if let Some(old_pr) = current_prs.iter_mut().find(|p| p.id == new_pr.id) {
                     let has_changed = old_pr.updated_at != new_pr.updated_at
@@ -418,7 +440,9 @@ where
                         || old_pr.review_status != new_pr.review_status
                         || old_pr.comment_count != new_pr.comment_count
                         || old_pr.total_resolvable_count != new_pr.total_resolvable_count
-                        || old_pr.unresolved_count != new_pr.unresolved_count;
+                        || old_pr.unresolved_count != new_pr.unresolved_count
+                        || old_pr.mergeable != new_pr.mergeable
+                        || old_pr.is_draft != new_pr.is_draft;
 
                     let is_attention_fresh = old_pr.attention_state.active_reasons.is_empty()
                         && old_pr.attention_state.last_seen_at.is_none()
@@ -456,13 +480,20 @@ where
                         let seen_unresolved = old_pr.last_seen_unresolved_count;
                         let seen_total = old_pr.last_seen_total_resolvable_count;
                         let seen_conv = old_pr.last_seen_conversational_count;
+                        let mut matched_queries = old_pr.matched_queries.clone();
                         *old_pr = new_pr.clone();
                         old_pr.last_seen_at = last_seen;
                         old_pr.last_seen_unresolved_count = seen_unresolved;
                         old_pr.last_seen_total_resolvable_count = seen_total;
                         old_pr.last_seen_conversational_count = seen_conv;
                         old_pr.attention_state = new_attn;
+                        if !matched_queries.iter().any(|q| q == query_name) {
+                            matched_queries.push(query_name.to_string());
+                        }
+                        old_pr.matched_queries = matched_queries;
                         self.trigger_details_fetch().await;
+                    } else if !old_pr.matched_queries.iter().any(|q| q == query_name) {
+                        old_pr.matched_queries.push(query_name.to_string());
                     }
                 } else {
                     let new_attn = attention::evaluate(
@@ -479,10 +510,26 @@ where
                     }
                     let mut pr = new_pr;
                     pr.attention_state = new_attn;
+                    if !pr.matched_queries.iter().any(|q| q == query_name) {
+                        pr.matched_queries.push(query_name.to_string());
+                    }
                     current_prs.push(pr);
                     self.trigger_details_fetch().await;
                 }
             }
+
+            // For PRs currently attributed to this query but missing from new result,
+            // remove the attribution. Drop the PR if it has no remaining attributions
+            // (but only after the initial sync, so other queries get a chance to attribute).
+            for pr in &mut current_prs {
+                if !new_ids.contains(&pr.id) && pr.matched_queries.iter().any(|q| q == query_name) {
+                    pr.matched_queries.retain(|q| q != query_name);
+                }
+            }
+            if !self.is_first_sync {
+                current_prs.retain(|pr| !pr.matched_queries.is_empty());
+            }
+
             self.pr_list.set_prs(current_prs);
             self.sort_prs();
             self.check_auto_unfollow();
@@ -725,6 +772,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,

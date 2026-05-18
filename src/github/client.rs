@@ -115,6 +115,7 @@ impl GithubProvider for GhCliClient {
                             deletions
                             reviewDecision
                             mergeable
+                            mergeStateStatus
                             headRefOid
                             comments {{ totalCount }}
                             reviewThreads(first: 100) {{
@@ -269,6 +270,7 @@ impl GithubProvider for GhCliClient {
                         deletions
                         reviewDecision
                         mergeable
+                        mergeStateStatus
                         headRefOid
                         comments {{ totalCount }}
                         reviewThreads(first: 100) {{
@@ -449,6 +451,7 @@ mod tests {
             deletions: Some(5),
             review_decision: Some("APPROVED".to_string()),
             mergeable: Some("MERGEABLE".to_string()),
+            merge_state_status: Some("CLEAN".to_string()),
             status_check_rollup: Some(RawStatusCheckRollup::Summary {
                 state: "SUCCESS".to_string(),
             }),

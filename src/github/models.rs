@@ -27,6 +27,8 @@ pub struct RawPullRequest {
     #[serde(rename = "reviewDecision")]
     pub review_decision: Option<String>,
     pub mergeable: Option<String>,
+    #[serde(rename = "mergeStateStatus")]
+    pub merge_state_status: Option<String>,
     #[serde(rename = "statusCheckRollup")]
     pub status_check_rollup: Option<RawStatusCheckRollup>,
     #[serde(rename = "headRefOid")]
@@ -123,10 +125,15 @@ impl From<RawPullRequest> for PullRequest {
             unresolved_count: raw.unresolved_count.unwrap_or(0),
             total_resolvable_count: raw.total_resolvable_count.unwrap_or(0),
             conversational_count: raw.comments_count.unwrap_or(0),
-            mergeable: match raw.mergeable.as_deref() {
-                Some("MERGEABLE") => MergeableStatus::Mergeable,
-                Some("CONFLICTING") => MergeableStatus::Conflicting,
-                _ => MergeableStatus::Unknown,
+            mergeable: match raw.merge_state_status.as_deref() {
+                Some("DIRTY") => MergeableStatus::Conflicting,
+                Some("BLOCKED" | "BEHIND" | "UNSTABLE") => MergeableStatus::BlockedByRequirements,
+                Some("CLEAN" | "HAS_HOOKS") => MergeableStatus::Mergeable,
+                _ => match raw.mergeable.as_deref() {
+                    Some("MERGEABLE") => MergeableStatus::Mergeable,
+                    Some("CONFLICTING") => MergeableStatus::Conflicting,
+                    _ => MergeableStatus::Unknown,
+                },
             },
             ci_status: match raw.status_check_rollup.as_ref().map(|s| s.state().to_uppercase()) {
                 Some(s) if s == "SUCCESS" => CIStatus::Passing,
@@ -140,6 +147,7 @@ impl From<RawPullRequest> for PullRequest {
             requested_reviewers,
             reviewers,
             is_draft: raw.is_draft,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -255,6 +263,97 @@ pub struct RawTimelineEvent {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RawLabel {
     pub name: String,
+}
+
+#[cfg(test)]
+mod mergeable_status_conversion_tests {
+    use super::*;
+
+    fn raw_with(merge_state_status: Option<&str>, mergeable: Option<&str>) -> RawPullRequest {
+        RawPullRequest {
+            id: "id".into(),
+            number: 1,
+            title: "t".into(),
+            author: RawAuthor { login: "a".into() },
+            repository: None,
+            head_repository: None,
+            state: "OPEN".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            body: String::new(),
+            comments_count: None,
+            review_comments: None,
+            unresolved_count: None,
+            total_resolvable_count: None,
+            additions: None,
+            deletions: None,
+            review_decision: None,
+            mergeable: mergeable.map(str::to_string),
+            merge_state_status: merge_state_status.map(str::to_string),
+            status_check_rollup: None,
+            head_ref_oid: None,
+            url: "https://github.com/o/r/pull/1".into(),
+            review_requests: None,
+            latest_reviews: None,
+            is_draft: false,
+        }
+    }
+
+    #[test]
+    fn test_merge_state_status_clean_maps_to_mergeable() {
+        let pr: PullRequest = raw_with(Some("CLEAN"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Mergeable);
+    }
+
+    #[test]
+    fn test_merge_state_status_has_hooks_maps_to_mergeable() {
+        let pr: PullRequest = raw_with(Some("HAS_HOOKS"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Mergeable);
+    }
+
+    #[test]
+    fn test_merge_state_status_blocked_maps_to_blocked_by_requirements() {
+        let pr: PullRequest = raw_with(Some("BLOCKED"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::BlockedByRequirements);
+    }
+
+    #[test]
+    fn test_merge_state_status_behind_maps_to_blocked_by_requirements() {
+        let pr: PullRequest = raw_with(Some("BEHIND"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::BlockedByRequirements);
+    }
+
+    #[test]
+    fn test_merge_state_status_unstable_maps_to_blocked_by_requirements() {
+        let pr: PullRequest = raw_with(Some("UNSTABLE"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::BlockedByRequirements);
+    }
+
+    #[test]
+    fn test_merge_state_status_dirty_maps_to_conflicting() {
+        let pr: PullRequest = raw_with(Some("DIRTY"), Some("CONFLICTING")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Conflicting);
+    }
+
+    #[test]
+    fn test_merge_state_status_unknown_falls_back_to_mergeable_field() {
+        let pr: PullRequest = raw_with(Some("UNKNOWN"), Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Mergeable);
+        let pr: PullRequest = raw_with(Some("UNKNOWN"), Some("CONFLICTING")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Conflicting);
+        let pr: PullRequest = raw_with(Some("UNKNOWN"), None).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Unknown);
+    }
+
+    #[test]
+    fn test_missing_merge_state_status_falls_back_to_mergeable_field() {
+        let pr: PullRequest = raw_with(None, Some("MERGEABLE")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Mergeable);
+        let pr: PullRequest = raw_with(None, Some("CONFLICTING")).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Conflicting);
+        let pr: PullRequest = raw_with(None, None).into();
+        assert_eq!(pr.mergeable, MergeableStatus::Unknown);
+    }
 }
 
 #[cfg(test)]

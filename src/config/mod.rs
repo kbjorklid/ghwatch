@@ -39,6 +39,8 @@ pub struct AppConfig {
     pub visible_columns: Vec<Column>,
     #[serde(default)]
     pub attention: AttentionConfig,
+    #[serde(default)]
+    pub max_age_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +92,7 @@ impl Default for AppConfig {
             theme: "dark".to_string(),
             visible_columns: default_columns(),
             attention: AttentionConfig::default(),
+            max_age_days: None,
         }
     }
 }

@@ -93,6 +93,7 @@ where
         AppMode::AddQuerySearch => handle_add_query_search_key(app, key).await,
         AppMode::ConfirmQuery => handle_confirm_query_key(app, key).await,
         AppMode::DeleteQueryConfirm => handle_delete_query_confirm_key(app, key),
+        AppMode::EditMaxAgeDays => handle_edit_max_age_days_key(app, key),
     }
 
     if old_index != app.pr_list.selected_index() {
@@ -194,7 +195,7 @@ where
 {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            let max = 11 + app.config.queries.len();
+            let max = 12 + app.config.queries.len();
             if app.settings_selected_index < max.saturating_sub(1) {
                 app.settings_selected_index += 1;
             }
@@ -237,6 +238,13 @@ where
                     app.query_test_error = None;
                     app.is_testing_query = false;
                     app.mode = AppMode::AddQueryName;
+                }
+                SettingAction::EditMaxAgeDays => {
+                    app.max_age_days_buffer = match app.config.max_age_days {
+                        Some(n) => n.to_string(),
+                        None => String::new(),
+                    };
+                    app.mode = AppMode::EditMaxAgeDays;
                 }
             }
         }
@@ -361,6 +369,7 @@ where
             }
             app.mode = AppMode::Settings;
             if app.is_writer {
+                save_config(app);
                 app.handle_config_reload(app.config.clone());
             }
         }
@@ -381,7 +390,7 @@ where
                 && idx < app.config.queries.len()
             {
                 app.config.queries.remove(idx);
-                let max_idx = (10 + app.config.queries.len()).saturating_sub(1);
+                let max_idx = (11 + app.config.queries.len()).saturating_sub(1);
                 if app.settings_selected_index > max_idx {
                     app.settings_selected_index = max_idx;
                 }
@@ -395,6 +404,36 @@ where
         KeyCode::Char('n') | KeyCode::Esc => {
             app.deleting_query_index = None;
             app.mode = AppMode::Settings;
+        }
+        _ => {}
+    }
+}
+
+fn handle_edit_max_age_days_key<B: Backend>(app: &mut App<B>, key: KeyEvent)
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    match key.code {
+        KeyCode::Enter => {
+            if app.max_age_days_buffer.is_empty() {
+                app.config.max_age_days = None;
+            } else if let Ok(n) = app.max_age_days_buffer.parse::<u32>() {
+                app.config.max_age_days = if n == 0 { None } else { Some(n) };
+            }
+            save_config(app);
+            if app.is_writer {
+                app.handle_config_reload(app.config.clone());
+            }
+            app.mode = AppMode::Settings;
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Settings;
+        }
+        KeyCode::Backspace => {
+            app.max_age_days_buffer.pop();
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            app.max_age_days_buffer.push(c);
         }
         _ => {}
     }
@@ -638,6 +677,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -718,7 +758,7 @@ mod tests {
     async fn test_theme_picker_enter_captures_original_and_sets_index() {
         let mut app = create_test_app().await;
         app.mode = AppMode::Settings;
-        app.settings_selected_index = 4;
+        app.settings_selected_index = 5;
         app.config.theme = "nord".to_string();
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
@@ -770,7 +810,7 @@ mod tests {
             interval: "60s".to_string(),
             enabled: true,
         }];
-        app.settings_selected_index = 10;
+        app.settings_selected_index = 11;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)).await;
 
@@ -790,7 +830,7 @@ mod tests {
             interval: "60s".to_string(),
             enabled: true,
         }];
-        app.settings_selected_index = 10;
+        app.settings_selected_index = 11;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)).await;
 
@@ -809,7 +849,7 @@ mod tests {
             enabled: true,
         }];
         app.deleting_query_index = Some(0);
-        app.settings_selected_index = 10;
+        app.settings_selected_index = 11;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)).await;
 
@@ -847,6 +887,70 @@ mod tests {
 
         assert_eq!(app.mode, AppMode::Settings);
         assert_eq!(app.editing_query_index, None);
+    }
+
+    #[tokio::test]
+    async fn test_edit_max_age_days_enter_sets_value() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::EditMaxAgeDays;
+        app.max_age_days_buffer = "14".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.config.max_age_days, Some(14));
+    }
+
+    #[tokio::test]
+    async fn test_edit_max_age_days_enter_empty_clears_value() {
+        let mut app = create_test_app().await;
+        app.config.max_age_days = Some(7);
+        app.mode = AppMode::EditMaxAgeDays;
+        app.max_age_days_buffer = String::new();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.config.max_age_days, None);
+    }
+
+    #[tokio::test]
+    async fn test_edit_max_age_days_esc_does_not_change_value() {
+        let mut app = create_test_app().await;
+        app.config.max_age_days = Some(7);
+        app.mode = AppMode::EditMaxAgeDays;
+        app.max_age_days_buffer = "99".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::Settings);
+        assert_eq!(app.config.max_age_days, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_edit_max_age_days_ignores_non_digit_chars() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::EditMaxAgeDays;
+        app.max_age_days_buffer = String::new();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)).await;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)).await;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE)).await;
+
+        assert_eq!(app.max_age_days_buffer, "14");
+    }
+
+    #[tokio::test]
+    async fn test_handle_settings_enter_on_max_age_row_opens_edit_mode() {
+        let mut app = create_test_app().await;
+        app.mode = AppMode::Settings;
+        app.config.max_age_days = Some(21);
+        app.settings_selected_index = 2;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert_eq!(app.mode, AppMode::EditMaxAgeDays);
+        assert_eq!(app.max_age_days_buffer, "21");
     }
 
     #[tokio::test]

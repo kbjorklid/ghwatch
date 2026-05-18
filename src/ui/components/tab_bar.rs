@@ -20,7 +20,8 @@ pub const fn active_tab(mode: &AppMode) -> usize {
         | AppMode::AddQuerySearch
         | AppMode::ConfirmQuery
         | AppMode::DeleteQueryConfirm
-        | AppMode::ThemePicker => 2,
+        | AppMode::ThemePicker
+        | AppMode::EditMaxAgeDays => 2,
     }
 }
 

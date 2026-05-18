@@ -72,7 +72,9 @@ impl PollingWorker {
             };
 
             if query.enabled && should_poll {
-                match self.github.fetch_prs_by_query(&query.search, None).await {
+                let effective_query =
+                    apply_age_cutoff(&query.search, self.config.max_age_days, chrono::Utc::now());
+                match self.github.fetch_prs_by_query(&effective_query, None).await {
                     Ok(prs) => {
                         self.last_polled[query_index] = Some(now);
                         let _ = self
@@ -94,6 +96,20 @@ impl PollingWorker {
                 first_cycle_complete = true;
                 let _ = self.event_tx.send(AppEvent::InitialSyncDone).await;
             }
+        }
+    }
+}
+
+pub(crate) fn apply_age_cutoff(
+    query: &str,
+    max_age_days: Option<u32>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    match max_age_days {
+        None | Some(0) => query.to_string(),
+        Some(days) => {
+            let cutoff = now - chrono::Duration::days(i64::from(days));
+            format!("{query} updated:>={}", cutoff.format("%Y-%m-%d"))
         }
     }
 }
@@ -182,6 +198,7 @@ mod tests {
                 requested_reviewers: vec![],
                 reviewers: vec![],
                 is_draft: false,
+                matched_queries: Vec::new(),
                 last_seen_at: None,
                 last_seen_unresolved_count: 0,
                 last_seen_total_resolvable_count: 0,
@@ -207,6 +224,36 @@ mod tests {
         }
 
         handle.abort();
+    }
+
+    fn fixed_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-05-18T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn test_apply_age_cutoff_none_returns_query_unchanged() {
+        let out = apply_age_cutoff("is:pr author:@me", None, fixed_now());
+        assert_eq!(out, "is:pr author:@me");
+    }
+
+    #[test]
+    fn test_apply_age_cutoff_zero_returns_query_unchanged() {
+        let out = apply_age_cutoff("is:pr author:@me", Some(0), fixed_now());
+        assert_eq!(out, "is:pr author:@me");
+    }
+
+    #[test]
+    fn test_apply_age_cutoff_appends_updated_qualifier() {
+        let out = apply_age_cutoff("is:pr author:@me", Some(14), fixed_now());
+        assert_eq!(out, "is:pr author:@me updated:>=2026-05-04");
+    }
+
+    #[test]
+    fn test_apply_age_cutoff_leaves_existing_updated_qualifier() {
+        let out = apply_age_cutoff("is:pr author:@me updated:>=2020-01-01", Some(7), fixed_now());
+        assert_eq!(out, "is:pr author:@me updated:>=2020-01-01 updated:>=2026-05-11");
     }
 
     #[test]

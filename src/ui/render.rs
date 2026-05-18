@@ -45,6 +45,7 @@ pub struct DrawContext<'a> {
     pub theme_picker_index: usize,
     pub editing_query_index: Option<usize>,
     pub deleting_query_index: Option<usize>,
+    pub max_age_days_buffer: &'a str,
 }
 
 impl<B: Backend> Renderer<B>
@@ -142,6 +143,32 @@ where
                     let modal = centered_rect(85, 90, f.area());
                     f.render_widget(ratatui::widgets::Clear, modal);
                     render_theme_picker(f, modal, ctx.theme_picker_index, &theme);
+                }
+                crate::app::AppMode::EditMaxAgeDays => {
+                    render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
+
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.info))
+                        .title(" Max PR age (days) — empty = Off ")
+                        .title_style(Style::default().fg(theme.title));
+
+                    let modal_area = centered_rect(50, 20, f.area());
+                    f.render_widget(ratatui::widgets::Clear, modal_area);
+
+                    let display = if ctx.max_age_days_buffer.is_empty() {
+                        Line::from(vec![Span::styled(
+                            "(empty)",
+                            Style::default().fg(theme.gray).add_modifier(Modifier::ITALIC),
+                        )])
+                    } else {
+                        Line::from(Span::styled(
+                            ctx.max_age_days_buffer,
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ))
+                    };
+                    let text = Paragraph::new(display).block(block);
+                    f.render_widget(text, modal_area);
                 }
                 crate::app::AppMode::DeleteQueryConfirm => {
                     render_settings(f, chunks[1], ctx.config, ctx.settings_selected_index, &theme);
@@ -430,6 +457,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,
@@ -468,6 +496,7 @@ mod tests {
                 theme_picker_index: 0,
                 editing_query_index: None,
                 deleting_query_index: None,
+                max_age_days_buffer: "",
             })
             .unwrap();
     }

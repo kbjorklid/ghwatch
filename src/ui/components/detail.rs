@@ -53,28 +53,41 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             Span::styled(&pr.repo, Style::default().fg(props.theme.text)),
         ]));
 
-        let status_color = match pr.status {
-            crate::domain::pr::PRStatus::Open => props.theme.success,
-            crate::domain::pr::PRStatus::Merged => props.theme.info,
-            crate::domain::pr::PRStatus::Closed => props.theme.gray,
+        let (status_label, status_color) = if pr.is_draft {
+            ("Draft".to_string(), props.theme.gray)
+        } else {
+            let color = match pr.status {
+                crate::domain::pr::PRStatus::Open => props.theme.success,
+                crate::domain::pr::PRStatus::Merged => props.theme.info,
+                crate::domain::pr::PRStatus::Closed => props.theme.gray,
+            };
+            (pr.status.to_string(), color)
         };
 
-        let review_status_color = match pr.review_status {
-            crate::domain::pr::ReviewStatus::Approved => props.theme.success,
-            crate::domain::pr::ReviewStatus::ChangesRequested => props.theme.error,
-            crate::domain::pr::ReviewStatus::Pending => props.theme.warning,
+        let (review_status_label, review_status_color) = if pr.is_draft {
+            ("-".to_string(), props.theme.gray)
+        } else {
+            let color = match pr.review_status {
+                crate::domain::pr::ReviewStatus::Approved => props.theme.success,
+                crate::domain::pr::ReviewStatus::ChangesRequested => props.theme.error,
+                crate::domain::pr::ReviewStatus::Pending => props.theme.warning,
+            };
+            (pr.review_status.to_string(), color)
         };
 
         let (mergeable_label, mergeable_color) = match pr.mergeable {
             MergeableStatus::Mergeable => (" Mergeable ", props.theme.success),
             MergeableStatus::Conflicting => (" Conflicting ", props.theme.error),
+            MergeableStatus::BlockedByRequirements => {
+                (" Requirements not met ", props.theme.warning)
+            }
             MergeableStatus::Unknown => (" Unknown ", props.theme.gray),
         };
 
         detail_text.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(props.theme.gray)),
             Span::styled(
-                format!(" {} ", pr.status),
+                format!(" {status_label} "),
                 Style::default()
                     .bg(status_color)
                     .fg(ratatui::style::Color::Black)
@@ -83,7 +96,7 @@ pub fn render_detail(f: &mut Frame, area: Rect, props: &DetailProps<'_>) {
             Span::raw(" "),
             Span::styled("Review: ", Style::default().fg(props.theme.gray)),
             Span::styled(
-                format!(" {} ", pr.review_status),
+                format!(" {review_status_label} "),
                 Style::default()
                     .bg(review_status_color)
                     .fg(ratatui::style::Color::Black)
@@ -278,6 +291,7 @@ mod tests {
             requested_reviewers: vec![],
             reviewers: vec![],
             is_draft: false,
+            matched_queries: Vec::new(),
             last_seen_at: None,
             last_seen_unresolved_count: 0,
             last_seen_total_resolvable_count: 0,

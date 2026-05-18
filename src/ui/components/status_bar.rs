@@ -31,6 +31,7 @@ pub fn render_status_bar(
         AppMode::ConfirmQuery => "y: Accept | n/Esc: Back",
         AppMode::DeleteQueryConfirm => "y: Delete | n/Esc: Cancel",
         AppMode::ThemePicker => "j/k: Browse | Enter: Select | Esc: Cancel",
+        AppMode::EditMaxAgeDays => "Enter: Save | Esc: Cancel | (empty = Off)",
     };
 
     let refresh_text = match last_refresh {

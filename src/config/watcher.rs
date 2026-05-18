@@ -19,6 +19,7 @@ impl ConfigWatcher {
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res
                 && matches!(event.kind, EventKind::Modify(_))
+                && event_targets_path(&event, &config_path_clone)
             {
                 // Try to reload config
                 if let Ok(content) = fs::read_to_string(&config_path_clone)
@@ -35,6 +36,11 @@ impl ConfigWatcher {
     }
 }
 
+fn event_targets_path(event: &Event, target: &Path) -> bool {
+    let target_name = target.file_name();
+    event.paths.iter().any(|p| p == target || p.file_name() == target_name)
+}
+
 #[allow(missing_debug_implementations)]
 pub struct StateWatcher {
     _watcher: notify::RecommendedWatcher,
@@ -48,6 +54,7 @@ impl StateWatcher {
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res
                 && matches!(event.kind, EventKind::Modify(_))
+                && event_targets_path(&event, &state_path_clone)
             {
                 // Try to reload state
                 if let Ok(content) = fs::read_to_string(&state_path_clone) {

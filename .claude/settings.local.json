@@ -5,7 +5,10 @@
       "Bash(git push *)",
       "WebSearch",
       "Bash(Get-ChildItem -Path \"F:\\\\code\\\\ghwatch\" -Recurse -Directory)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(cargo build *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)"
     ]
   }
 }

@@ -14,6 +14,7 @@ pub enum SettingAction {
     ToggleNerdFonts,
     ToggleStatusBar,
     OpenThemePicker,
+    EditMaxAgeDays,
     ToggleColumn(crate::config::Column),
     ToggleQuery(usize),
     AddQuery,
@@ -22,21 +23,22 @@ pub enum SettingAction {
 #[must_use]
 pub fn get_setting_action(config: &AppConfig, index: usize) -> SettingAction {
     match index {
-        0 | 1 | 5 => SettingAction::None,
-        2 => SettingAction::ToggleNerdFonts,
-        3 => SettingAction::ToggleStatusBar,
-        4 => SettingAction::OpenThemePicker,
-        idx if (6..10).contains(&idx) => {
+        0 | 1 | 6 => SettingAction::None,
+        2 => SettingAction::EditMaxAgeDays,
+        3 => SettingAction::ToggleNerdFonts,
+        4 => SettingAction::ToggleStatusBar,
+        5 => SettingAction::OpenThemePicker,
+        idx if (7..11).contains(&idx) => {
             let cols = [
                 crate::config::Column::Author,
                 crate::config::Column::Age,
                 crate::config::Column::Diff,
                 crate::config::Column::Comments,
             ];
-            SettingAction::ToggleColumn(cols[idx - 6].clone())
+            SettingAction::ToggleColumn(cols[idx - 7].clone())
         }
-        idx if idx >= 10 && idx < 10 + config.queries.len() => SettingAction::ToggleQuery(idx - 10),
-        idx if idx == 10 + config.queries.len() => SettingAction::AddQuery,
+        idx if idx >= 11 && idx < 11 + config.queries.len() => SettingAction::ToggleQuery(idx - 11),
+        idx if idx == 11 + config.queries.len() => SettingAction::AddQuery,
         _ => SettingAction::None,
     }
 }
@@ -55,9 +57,14 @@ pub fn render_settings(
         .title_style(Style::default().fg(theme.title));
     let mut text = Vec::new();
 
+    let max_age_display = match config.max_age_days {
+        Some(n) => format!("{n} days"),
+        None => "Off".to_string(),
+    };
     let items = [
         ("Current User", config.current_user.clone()),
         ("Polling Interval", format!("{}ms", config.polling_interval_ms)),
+        ("Max PR age (days)", max_age_display),
         (
             "Nerd Fonts",
             if config.use_nerd_fonts { "Enabled".to_string() } else { "Disabled".to_string() },
@@ -96,7 +103,7 @@ pub fn render_settings(
     ];
 
     for (i, (col, label)) in all_cols.iter().enumerate() {
-        let idx = i + 6;
+        let idx = i + 7;
         let style = if idx == selected_idx {
             Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
         } else {
@@ -116,7 +123,7 @@ pub fn render_settings(
     )));
 
     for (i, query) in config.queries.iter().enumerate() {
-        let idx = i + 10;
+        let idx = i + 11;
         let style = if idx == selected_idx {
             Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
         } else {
@@ -131,7 +138,7 @@ pub fn render_settings(
     }
 
     // Add Query button
-    let add_query_idx = 10 + config.queries.len();
+    let add_query_idx = 11 + config.queries.len();
     let style = if add_query_idx == selected_idx {
         Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
     } else {
@@ -169,14 +176,16 @@ mod tests {
         }];
 
         assert!(matches!(get_setting_action(&config, 0), SettingAction::None));
-        assert!(matches!(get_setting_action(&config, 2), SettingAction::ToggleNerdFonts));
-        assert!(matches!(get_setting_action(&config, 4), SettingAction::OpenThemePicker));
+        assert!(matches!(get_setting_action(&config, 2), SettingAction::EditMaxAgeDays));
+        assert!(matches!(get_setting_action(&config, 3), SettingAction::ToggleNerdFonts));
+        assert!(matches!(get_setting_action(&config, 5), SettingAction::OpenThemePicker));
+        assert!(matches!(get_setting_action(&config, 6), SettingAction::None));
         assert!(matches!(
-            get_setting_action(&config, 6),
+            get_setting_action(&config, 7),
             SettingAction::ToggleColumn(crate::config::Column::Author)
         ));
-        assert!(matches!(get_setting_action(&config, 10), SettingAction::ToggleQuery(0)));
-        assert!(matches!(get_setting_action(&config, 11), SettingAction::AddQuery));
+        assert!(matches!(get_setting_action(&config, 11), SettingAction::ToggleQuery(0)));
+        assert!(matches!(get_setting_action(&config, 12), SettingAction::AddQuery));
         assert!(matches!(get_setting_action(&config, 999), SettingAction::None));
     }
 
