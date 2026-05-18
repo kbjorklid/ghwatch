@@ -440,7 +440,7 @@ mod tests {
         let won1 = repo.try_acquire_poll_lease(Duration::from_secs(0)).unwrap();
         assert!(won1);
         // Immediately trying again with a long interval should fail
-        let won2 = repo.try_acquire_poll_lease(Duration::from_secs(3600)).unwrap();
+        let won2 = repo.try_acquire_poll_lease(Duration::from_hours(1)).unwrap();
         assert!(!won2);
     }
 
