@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::domain::ports::GithubProvider;
+use crate::domain::ports::{GithubProvider, StateRepository};
 use crate::ui::events::AppEvent;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -9,6 +9,7 @@ use tokio::time::{self, Duration, Instant};
 pub struct PollingWorker {
     config: AppConfig,
     github: Arc<dyn GithubProvider>,
+    state_repo: Arc<dyn StateRepository>,
     event_tx: mpsc::Sender<AppEvent>,
     last_polled: Vec<Option<Instant>>,
 }
@@ -17,10 +18,11 @@ impl PollingWorker {
     pub fn new(
         config: AppConfig,
         github: Arc<dyn GithubProvider>,
+        state_repo: Arc<dyn StateRepository>,
         event_tx: mpsc::Sender<AppEvent>,
     ) -> Self {
         let num_queries = config.queries.len();
-        Self { config, github, event_tx, last_polled: vec![None; num_queries] }
+        Self { config, github, state_repo, event_tx, last_polled: vec![None; num_queries] }
     }
 
     pub async fn start(mut self) {
@@ -38,6 +40,28 @@ impl PollingWorker {
             if query_index == 0 {
                 let _ = self.event_tx.send(AppEvent::PollCycleStarted).await;
 
+                // Lease interval: slightly less than tick to account for processing time.
+                let lease_interval =
+                    Duration::from_millis(self.config.polling_interval_ms.saturating_sub(200));
+                let is_lease_holder =
+                    self.state_repo.try_acquire_poll_lease(lease_interval).unwrap_or(true);
+
+                if !is_lease_holder {
+                    // Another instance is polling; refresh UI from DB.
+                    if let Ok(prs) = self.state_repo.load_state() {
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::PrsUpdated { query_name: "db-reload".to_string(), prs })
+                            .await;
+                    }
+                    query_index = (query_index + 1) % self.config.queries.len();
+                    if !first_cycle_complete {
+                        first_cycle_complete = true;
+                        let _ = self.event_tx.send(AppEvent::InitialSyncDone).await;
+                    }
+                    continue;
+                }
+
                 // Rate limit check once per cycle
                 if let Ok(rate) = self.github.fetch_rate_limit().await {
                     if rate.remaining < 50 {
@@ -47,7 +71,7 @@ impl PollingWorker {
                                 "Rate limit critical! Pausing polling...".to_string(),
                             ))
                             .await;
-                        time::sleep(Duration::from_mins(5)).await; // Long wait
+                        time::sleep(Duration::from_mins(5)).await;
                         continue;
                     } else if rate.remaining < 100 {
                         let _ = self
@@ -149,13 +173,24 @@ mod tests {
         }
     }
 
-    // We need to redefine CheckRun and TimelineEvent or import them if they were public and available
-    // For the mock to work correctly in this scope.
     use crate::domain::pr::{CheckRun, TimelineEvent};
+
+    mock! {
+        pub StateRepository {}
+        impl StateRepository for StateRepository {
+            fn save_state(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
+            fn load_state(&self) -> anyhow::Result<Vec<PullRequest>>;
+            fn save_archive(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
+            fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
+            fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
+            fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
+        }
+    }
 
     #[tokio::test]
     async fn test_polling_worker_cycle() {
         let mut github = MockGithubProvider::new();
+        let mut state_repo = MockStateRepository::new();
         let (tx, mut rx) = mpsc::channel(10);
 
         let config = AppConfig {
@@ -168,6 +203,8 @@ mod tests {
             polling_interval_ms: 10,
             ..Default::default()
         };
+
+        state_repo.expect_try_acquire_poll_lease().returning(|_| Ok(true));
 
         github
             .expect_fetch_rate_limit()
@@ -207,9 +244,8 @@ mod tests {
             }])
         });
 
-        let worker = PollingWorker::new(config, Arc::new(github), tx);
+        let worker = PollingWorker::new(config, Arc::new(github), Arc::new(state_repo), tx);
 
-        // Run worker in background and wait for events
         let handle = tokio::spawn(worker.start());
 
         let event1 = rx.recv().await.unwrap();

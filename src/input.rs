@@ -176,15 +176,13 @@ where
             app.archive_list.set_selected_index(app.archive_list.items().len().saturating_sub(1));
         }
         KeyCode::Char('d')
-            if app.is_writer
-                && app.archive_list.selected_index() < app.archive_list.items().len()
+            if app.archive_list.selected_index() < app.archive_list.items().len()
                 && app.archive_list.remove_selected().is_some() =>
         {
             let _ = app.state_repo.save_archive(app.archive_list.items());
         }
         KeyCode::Char('f')
-            if app.is_writer
-                && app.archive_list.selected_index() < app.archive_list.items().len() =>
+            if app.archive_list.selected_index() < app.archive_list.items().len() =>
         {
             if let Some(mut pr) = app.archive_list.remove_selected() {
                 if !pr.matched_queries.iter().any(|q| q == "manual") {
@@ -381,10 +379,8 @@ where
                 });
             }
             app.mode = AppMode::Settings;
-            if app.is_writer {
-                save_config(app);
-                app.handle_config_reload(app.config.clone());
-            }
+            save_config(app);
+            app.handle_config_reload(app.config.clone());
         }
         KeyCode::Char('n') | KeyCode::Esc => {
             app.mode = AppMode::AddQuerySearch;
@@ -408,9 +404,7 @@ where
                     app.settings_selected_index = max_idx;
                 }
                 save_config(app);
-                if app.is_writer {
-                    app.handle_config_reload(app.config.clone());
-                }
+                app.handle_config_reload(app.config.clone());
             }
             app.mode = AppMode::Settings;
         }
@@ -434,9 +428,7 @@ where
                 app.config.max_age_days = if n == 0 { None } else { Some(n) };
             }
             save_config(app);
-            if app.is_writer {
-                app.handle_config_reload(app.config.clone());
-            }
+            app.handle_config_reload(app.config.clone());
             app.mode = AppMode::Settings;
         }
         KeyCode::Esc => {
@@ -536,7 +528,7 @@ where
         KeyCode::Char('/') => {
             app.mode = AppMode::Search;
         }
-        KeyCode::Char('f') if app.is_writer => {
+        KeyCode::Char('f') => {
             app.mode = AppMode::Follow;
         }
         KeyCode::Left | KeyCode::Char('h') => switch_to_settings(app),
@@ -560,7 +552,7 @@ where
         KeyCode::Char('o') => {
             if let Some(pr) = app.pr_list.selected_pr() {
                 let url = pr.url.clone();
-                if app.config.attention.open_in_browser_marks_seen && app.is_writer {
+                if app.config.attention.open_in_browser_marks_seen {
                     let now = chrono::Utc::now();
                     let mut prs = app.pr_list.items().to_vec();
                     if let Some(pr) = prs.get_mut(app.pr_list.selected_index()) {
@@ -615,7 +607,7 @@ where
         KeyCode::Char('G') => {
             app.pr_list.set_selected_index(app.pr_list.items().len().saturating_sub(1));
         }
-        KeyCode::Char('m') if app.is_writer => {
+        KeyCode::Char('m') => {
             let now = chrono::Utc::now();
             let mut prs = app.pr_list.items().to_vec();
             if let Some(pr) = prs.get_mut(app.pr_list.selected_index()) {
@@ -628,7 +620,7 @@ where
                 let _ = app.state_repo.save_state(app.pr_list.items());
             }
         }
-        KeyCode::Char('M') if app.is_writer => {
+        KeyCode::Char('M') => {
             let now = chrono::Utc::now();
             let mut prs = app.pr_list.items().to_vec();
             for pr in &mut prs {
@@ -641,9 +633,7 @@ where
             app.pr_list.set_prs(prs);
             let _ = app.state_repo.save_state(app.pr_list.items());
         }
-        KeyCode::Char('u')
-            if app.is_writer && app.pr_list.selected_index() < app.pr_list.items().len() =>
-        {
+        KeyCode::Char('u') if app.pr_list.selected_index() < app.pr_list.items().len() => {
             if let Some(mut pr) = app.pr_list.remove_selected() {
                 crate::domain::attention::apply_archive(&mut pr.attention_state);
                 app.archive_list.insert_at_front(pr.clone());

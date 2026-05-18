@@ -33,6 +33,7 @@ mock! {
         fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
         fn save_archive(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
         fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
+        fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
     }
 }
 

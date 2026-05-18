@@ -26,7 +26,7 @@ comrak = "0.52.0"
 crossterm = "0.29.0"
 derive_more = { version = "2.1.1", features = ["full"] }
 directories = "6.0.0"
-fs2 = "0.4.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
 mockall = "0.14.0"
 notify = "8.2.0"
 notify-rust = "4.17.0"
