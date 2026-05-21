@@ -22,6 +22,8 @@ pub trait StateRepository: Send + Sync {
     fn save_archive(&self, archive: &[PullRequest]) -> Result<()>;
     fn archive_pr(&self, pr: PullRequest) -> Result<()>;
     fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> Result<bool>;
+    fn load_config_json(&self) -> Result<Option<String>>;
+    fn save_config_json(&self, json: &str) -> Result<()>;
 }
 
 pub trait NotificationService: Send + Sync {

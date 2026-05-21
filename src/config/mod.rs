@@ -1,8 +1,6 @@
 use crate::domain::attention::AttentionConfig;
 use serde::{Deserialize, Serialize};
 
-pub mod watcher;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum GroupMode {
     #[default]
@@ -94,5 +92,32 @@ impl Default for AppConfig {
             attention: AttentionConfig::default(),
             max_age_days: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_attention_roundtrip_json() {
+        let mut config = AppConfig::default();
+        config.attention.open_in_browser_marks_seen = true;
+        let json = serde_json::to_string(&config).expect("json serialization failed");
+        let loaded: AppConfig = serde_json::from_str(&json).expect("json deserialization failed");
+        assert!(loaded.attention.open_in_browser_marks_seen);
+    }
+
+    #[test]
+    fn test_serialize_attention_roundtrip() {
+        let mut config = AppConfig::default();
+        config.attention.open_in_browser_marks_seen = true;
+        let serialized = toml::to_string(&config).expect("serialization failed");
+        assert!(
+            serialized.contains("open_in_browser_marks_seen = true"),
+            "attention field missing from serialized output:\n{serialized}"
+        );
+        let loaded: AppConfig = toml::from_str(&serialized).expect("deserialization failed");
+        assert!(loaded.attention.open_in_browser_marks_seen);
     }
 }

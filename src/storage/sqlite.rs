@@ -68,7 +68,14 @@ impl SqliteStateRepository {
                 last_started_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'
             );
 
-            INSERT OR IGNORE INTO poll_lease (id) VALUES (1);",
+            INSERT OR IGNORE INTO poll_lease (id) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS config (
+                id    INTEGER PRIMARY KEY CHECK (id = 1),
+                value TEXT NOT NULL DEFAULT '{}'
+            ) STRICT;
+
+            INSERT OR IGNORE INTO config (id, value) VALUES (1, '{}');",
         )?;
 
         Ok(Self { conn: Mutex::new(conn) })
@@ -296,6 +303,21 @@ impl StateRepository for SqliteStateRepository {
         drop(conn);
         Ok(rows == 1)
     }
+
+    #[allow(clippy::significant_drop_tightening)]
+    fn load_config_json(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let val: String =
+            conn.query_row("SELECT value FROM config WHERE id = 1", [], |r| r.get(0))?;
+        Ok(if val == "{}" { None } else { Some(val) })
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    fn save_config_json(&self, json: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT OR REPLACE INTO config (id, value) VALUES (1, ?1)", [json])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +464,25 @@ mod tests {
         // Immediately trying again with a long interval should fail
         let won2 = repo.try_acquire_poll_lease(Duration::from_hours(1)).unwrap();
         assert!(!won2);
+    }
+
+    #[test]
+    fn test_save_and_load_config_json() {
+        let repo = setup_repo();
+        assert!(repo.load_config_json().unwrap().is_none());
+        let json = r#"{"polling_interval_ms":5000,"current_user":"bob"}"#;
+        repo.save_config_json(json).unwrap();
+        let loaded = repo.load_config_json().unwrap();
+        assert_eq!(loaded.as_deref(), Some(json));
+    }
+
+    #[test]
+    fn test_save_config_json_overwrites_previous() {
+        let repo = setup_repo();
+        repo.save_config_json(r#"{"v":1}"#).unwrap();
+        repo.save_config_json(r#"{"v":2}"#).unwrap();
+        let loaded = repo.load_config_json().unwrap();
+        assert_eq!(loaded.as_deref(), Some(r#"{"v":2}"#));
     }
 
     #[test]

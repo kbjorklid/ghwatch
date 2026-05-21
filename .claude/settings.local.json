@@ -8,7 +8,10 @@
       "Bash(Select-Object -ExpandProperty FullName)",
       "Bash(cargo build *)",
       "Bash(cargo clippy *)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Skill(commit-commands:commit-push-pr)",
+      "Bash(cargo check *)",
+      "Bash(awk '{print $1}')"
     ]
   }
 }

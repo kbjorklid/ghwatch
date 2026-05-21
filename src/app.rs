@@ -71,7 +71,6 @@ where
     pub detail_focused: bool,
     pub detail_scroll: u16,
     pub input_buffer: String,
-    pub config_watcher: Option<crate::config::watcher::ConfigWatcher>,
     pub notifier: Box<dyn crate::domain::ports::NotificationService>,
     pub last_refresh: Option<std::time::Instant>,
     pub polling_task: Option<tokio::task::JoinHandle<()>>,
@@ -124,8 +123,19 @@ where
         backend: B,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
-        let config_path = config_dir.join("config.toml");
-        let config = AppConfig::load(&config_path).unwrap_or_default();
+        let config = state_repo
+            .load_config_json()
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<AppConfig>(&json).ok())
+            .unwrap_or_else(|| {
+                let config_path = config_dir.join("config.toml");
+                let migrated = AppConfig::load(&config_path).unwrap_or_default();
+                if let Ok(json) = serde_json::to_string(&migrated) {
+                    let _ = state_repo.save_config_json(&json);
+                }
+                migrated
+            });
 
         let _ = std::fs::create_dir_all(data_dir);
 
@@ -152,7 +162,6 @@ where
             detail_focused: false,
             detail_scroll: 0,
             input_buffer: String::new(),
-            config_watcher: None,
             notifier,
             last_refresh: None,
             polling_task: None,
@@ -179,16 +188,13 @@ impl<B: Backend> App<B>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    pub async fn run(&mut self, _init_renderer: bool) -> Result<()> {
-        let config_dir =
-            crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let config_path = config_dir.join("config.toml");
-        if config_path.exists() {
-            self.config_watcher =
-                crate::config::watcher::ConfigWatcher::new(&config_path, self.event_tx.clone())
-                    .ok();
+    pub fn save_config(&self) {
+        if let Ok(json) = serde_json::to_string(&self.config) {
+            let _ = self.state_repo.save_config_json(&json);
         }
+    }
 
+    pub async fn run(&mut self, _init_renderer: bool) -> Result<()> {
         if self.config.current_user.is_empty() {
             let output = Command::new("gh").args(["api", "user", "--jq", ".login"]).output().await;
             if let Ok(output) = output {
@@ -266,6 +272,7 @@ where
             }
         }
 
+        self.save_config();
         Ok(())
     }
 
@@ -745,6 +752,8 @@ mod tests {
             fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
             fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
             fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
+            fn load_config_json(&self) -> anyhow::Result<Option<String>>;
+            fn save_config_json(&self, json: &str) -> anyhow::Result<()>;
         }
     }
 
@@ -795,6 +804,8 @@ mod tests {
     async fn test_suppress_notifications_at_startup() {
         let github = Arc::new(MockGithubProvider::new());
         let mut state_repo = MockStateRepository::new();
+        state_repo.expect_load_config_json().returning(|| Ok(None));
+        state_repo.expect_save_config_json().returning(|_| Ok(()));
         state_repo.expect_load_state().returning(|| Ok(vec![]));
         state_repo.expect_load_archive().returning(|| Ok(vec![]));
         state_repo.expect_save_state().returning(|_| Ok(()));

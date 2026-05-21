@@ -1,5 +1,5 @@
 use crate::app::{App, AppMode, SortMode};
-use crate::ui::components::settings::{SettingAction, get_setting_action};
+use crate::ui::components::settings::{QUERIES_START, SettingAction, get_setting_action};
 use crate::ui::events::AppEvent;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::Backend;
@@ -27,16 +27,6 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     app.mode = AppMode::Settings;
-}
-
-fn save_config<B: Backend>(app: &App<B>)
-where
-    B::Error: std::error::Error + Send + Sync + 'static,
-{
-    let config_dir =
-        crate::storage::get_config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let config_path = config_dir.join("config.toml");
-    let _ = std::fs::write(config_path, toml::to_string(&app.config).unwrap_or_default());
 }
 
 pub async fn handle_event<B: Backend>(app: &mut App<B>, event: Event)
@@ -206,7 +196,7 @@ where
 {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            let max = 12 + app.config.queries.len();
+            let max = QUERIES_START + 1 + app.config.queries.len();
             if app.settings_selected_index < max.saturating_sub(1) {
                 app.settings_selected_index += 1;
             }
@@ -219,6 +209,10 @@ where
                 SettingAction::None => {}
                 SettingAction::ToggleNerdFonts => {
                     app.config.use_nerd_fonts = !app.config.use_nerd_fonts;
+                }
+                SettingAction::ToggleOpenInBrowserMarksSeen => {
+                    app.config.attention.open_in_browser_marks_seen =
+                        !app.config.attention.open_in_browser_marks_seen;
                 }
                 SettingAction::ToggleStatusBar => {
                     app.config.show_status_bar = !app.config.show_status_bar;
@@ -285,11 +279,11 @@ where
             app.mode = AppMode::Diagnostic;
         }
         KeyCode::Left | KeyCode::Char('h') => {
-            save_config(app);
+            app.save_config();
             switch_to_archive(app);
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Esc => {
-            save_config(app);
+            app.save_config();
             switch_to_prs(app);
         }
         _ => {}
@@ -379,7 +373,7 @@ where
                 });
             }
             app.mode = AppMode::Settings;
-            save_config(app);
+            app.save_config();
             app.handle_config_reload(app.config.clone());
         }
         KeyCode::Char('n') | KeyCode::Esc => {
@@ -403,7 +397,7 @@ where
                 if app.settings_selected_index > max_idx {
                     app.settings_selected_index = max_idx;
                 }
-                save_config(app);
+                app.save_config();
                 app.handle_config_reload(app.config.clone());
             }
             app.mode = AppMode::Settings;
@@ -427,7 +421,7 @@ where
             } else if let Ok(n) = app.max_age_days_buffer.parse::<u32>() {
                 app.config.max_age_days = if n == 0 { None } else { Some(n) };
             }
-            save_config(app);
+            app.save_config();
             app.handle_config_reload(app.config.clone());
             app.mode = AppMode::Settings;
         }
@@ -463,7 +457,7 @@ where
         KeyCode::Enter => {
             app.theme_picker_original = None;
             app.mode = AppMode::Settings;
-            save_config(app);
+            app.save_config();
         }
         KeyCode::Esc => {
             if let Some(original) = app.theme_picker_original.take() {
@@ -692,6 +686,8 @@ mod tests {
     async fn create_test_app() -> App<TestBackend> {
         let github = Arc::new(MockGithubProvider::new());
         let mut state_repo = MockStateRepository::new();
+        state_repo.expect_load_config_json().returning(|| Ok(None));
+        state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
         state_repo.expect_load_state().returning(|| Ok(vec![]));
         state_repo.expect_load_archive().returning(|| Ok(vec![]));
         let state_repo = Arc::new(state_repo);
@@ -813,7 +809,7 @@ mod tests {
             interval: "60s".to_string(),
             enabled: true,
         }];
-        app.settings_selected_index = 11;
+        app.settings_selected_index = QUERIES_START;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)).await;
 
@@ -833,7 +829,7 @@ mod tests {
             interval: "60s".to_string(),
             enabled: true,
         }];
-        app.settings_selected_index = 11;
+        app.settings_selected_index = QUERIES_START;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)).await;
 
@@ -852,7 +848,7 @@ mod tests {
             enabled: true,
         }];
         app.deleting_query_index = Some(0);
-        app.settings_selected_index = 11;
+        app.settings_selected_index = QUERIES_START;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)).await;
 

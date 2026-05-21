@@ -28,7 +28,6 @@ derive_more = { version = "2.1.1", features = ["full"] }
 directories = "6.0.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 mockall = "0.14.0"
-notify = "8.2.0"
 notify-rust = "4.17.0"
 ratatui = { version = "0.30.0", features = ["crossterm"] }
 serde = { version = "1.0.228", features = ["derive"] }

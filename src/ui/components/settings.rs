@@ -8,6 +8,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+const COLS_START: usize = 8;
+const NUM_COLS: usize = 4;
+pub const QUERIES_START: usize = COLS_START + NUM_COLS;
+
 #[derive(Debug)]
 pub enum SettingAction {
     None,
@@ -15,6 +19,7 @@ pub enum SettingAction {
     ToggleStatusBar,
     OpenThemePicker,
     EditMaxAgeDays,
+    ToggleOpenInBrowserMarksSeen,
     ToggleColumn(crate::config::Column),
     ToggleQuery(usize),
     AddQuery,
@@ -28,17 +33,20 @@ pub fn get_setting_action(config: &AppConfig, index: usize) -> SettingAction {
         3 => SettingAction::ToggleNerdFonts,
         4 => SettingAction::ToggleStatusBar,
         5 => SettingAction::OpenThemePicker,
-        idx if (7..11).contains(&idx) => {
+        7 => SettingAction::ToggleOpenInBrowserMarksSeen,
+        idx if (COLS_START..QUERIES_START).contains(&idx) => {
             let cols = [
                 crate::config::Column::Author,
                 crate::config::Column::Age,
                 crate::config::Column::Diff,
                 crate::config::Column::Comments,
             ];
-            SettingAction::ToggleColumn(cols[idx - 7].clone())
+            SettingAction::ToggleColumn(cols[idx - COLS_START].clone())
         }
-        idx if idx >= 11 && idx < 11 + config.queries.len() => SettingAction::ToggleQuery(idx - 11),
-        idx if idx == 11 + config.queries.len() => SettingAction::AddQuery,
+        idx if idx >= QUERIES_START && idx < QUERIES_START + config.queries.len() => {
+            SettingAction::ToggleQuery(idx - QUERIES_START)
+        }
+        idx if idx == QUERIES_START + config.queries.len() => SettingAction::AddQuery,
         _ => SettingAction::None,
     }
 }
@@ -75,6 +83,14 @@ pub fn render_settings(
         ),
         ("Theme", config.theme.clone()),
         ("Unfollow Timeout", format!("{} mins", config.unfollow_timeout_mins)),
+        (
+            "Open in browser marks seen",
+            if config.attention.open_in_browser_marks_seen {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            },
+        ),
     ];
 
     for (i, (label, value)) in items.iter().enumerate() {
@@ -103,7 +119,7 @@ pub fn render_settings(
     ];
 
     for (i, (col, label)) in all_cols.iter().enumerate() {
-        let idx = i + 7;
+        let idx = i + COLS_START;
         let style = if idx == selected_idx {
             Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
         } else {
@@ -123,7 +139,7 @@ pub fn render_settings(
     )));
 
     for (i, query) in config.queries.iter().enumerate() {
-        let idx = i + 11;
+        let idx = i + QUERIES_START;
         let style = if idx == selected_idx {
             Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
         } else {
@@ -138,7 +154,7 @@ pub fn render_settings(
     }
 
     // Add Query button
-    let add_query_idx = 11 + config.queries.len();
+    let add_query_idx = QUERIES_START + config.queries.len();
     let style = if add_query_idx == selected_idx {
         Style::default().bg(theme.highlight_bg).fg(theme.highlight_fg)
     } else {
@@ -182,10 +198,17 @@ mod tests {
         assert!(matches!(get_setting_action(&config, 6), SettingAction::None));
         assert!(matches!(
             get_setting_action(&config, 7),
+            SettingAction::ToggleOpenInBrowserMarksSeen
+        ));
+        assert!(matches!(
+            get_setting_action(&config, COLS_START),
             SettingAction::ToggleColumn(crate::config::Column::Author)
         ));
-        assert!(matches!(get_setting_action(&config, 11), SettingAction::ToggleQuery(0)));
-        assert!(matches!(get_setting_action(&config, 12), SettingAction::AddQuery));
+        assert!(matches!(
+            get_setting_action(&config, QUERIES_START),
+            SettingAction::ToggleQuery(0)
+        ));
+        assert!(matches!(get_setting_action(&config, QUERIES_START + 1), SettingAction::AddQuery));
         assert!(matches!(get_setting_action(&config, 999), SettingAction::None));
     }
 

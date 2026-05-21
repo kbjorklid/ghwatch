@@ -184,6 +184,8 @@ mod tests {
             fn load_archive(&self) -> anyhow::Result<Vec<PullRequest>>;
             fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
             fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
+            fn load_config_json(&self) -> anyhow::Result<Option<String>>;
+            fn save_config_json(&self, json: &str) -> anyhow::Result<()>;
         }
     }
 

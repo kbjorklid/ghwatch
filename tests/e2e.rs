@@ -34,6 +34,8 @@ mock! {
         fn save_archive(&self, prs: &[PullRequest]) -> anyhow::Result<()>;
         fn archive_pr(&self, pr: PullRequest) -> anyhow::Result<()>;
         fn try_acquire_poll_lease(&self, interval: std::time::Duration) -> anyhow::Result<bool>;
+        fn load_config_json(&self) -> anyhow::Result<Option<String>>;
+        fn save_config_json(&self, json: &str) -> anyhow::Result<()>;
     }
 }
 
@@ -80,6 +82,8 @@ async fn test_navigation_and_mark_as_read() {
     let pr2 = create_test_pr("2", 2);
     let prs = vec![pr1.clone(), pr2.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -146,6 +150,8 @@ async fn test_search_filtering() {
     pr2.title = "Search Me".to_string();
     let prs = vec![pr1.clone(), pr2.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -189,6 +195,8 @@ async fn test_sorting() {
     pr2.updated_at = "2024-05-02T10:00:00Z".to_string();
     let prs = vec![pr1.clone(), pr2.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -234,6 +242,8 @@ async fn test_priority_sorting() {
 
     let prs = vec![pr1.clone(), pr2.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -267,6 +277,8 @@ async fn test_grouping_cycle() {
     let github = MockGithubProvider::new();
     let mut state_repo = MockStateRepository::new();
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(|| Ok(vec![]));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -295,6 +307,8 @@ async fn test_app_modes() {
     let github = MockGithubProvider::new();
     let mut state_repo = MockStateRepository::new();
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(|| Ok(vec![]));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -333,6 +347,8 @@ async fn test_manual_follow() {
 
     let pr = create_test_pr("1", 1);
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(|| Ok(vec![]));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -390,6 +406,8 @@ async fn test_archiving() {
     let pr1 = create_test_pr("1", 1);
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_archive_pr().returning(|_| Ok(()));
@@ -422,6 +440,8 @@ async fn test_archived_pr_not_readded_by_poll() {
     let pr1 = create_test_pr("1", 1);
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_archive_pr().returning(|_| Ok(()));
@@ -460,6 +480,8 @@ async fn test_archived_pr_removed_from_active_list_on_poll() {
     let pr1 = create_test_pr("1", 1);
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     let archived_pr = pr1.clone();
     state_repo.expect_load_archive().returning(move || Ok(vec![archived_pr.clone()]));
@@ -495,6 +517,8 @@ async fn test_follow_from_archive() {
     let pr1 = create_test_pr("1", 1);
     let archived = pr1.clone();
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(|| Ok(vec![]));
     state_repo.expect_load_archive().returning(move || Ok(vec![archived.clone()]));
     state_repo.expect_save_archive().returning(|_| Ok(()));
@@ -538,6 +562,8 @@ async fn test_detail_fetching_on_navigation() {
     let pr2 = create_test_pr("2", 2);
     let prs = vec![pr1.clone(), pr2.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -594,6 +620,8 @@ async fn test_attention_ci_failed_fires_on_transition() {
     pr1.ci_status = CIStatus::Passing;
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -638,6 +666,8 @@ async fn test_attention_mentioned_fires_on_timeline_loaded() {
     pr1.author = "otheruser".to_string();
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -689,6 +719,8 @@ async fn test_attention_mark_seen_clears_active_reasons() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -734,6 +766,8 @@ async fn test_attention_archive_clears_active_reasons() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_archive_pr().returning(|_| Ok(()));
@@ -778,6 +812,8 @@ async fn test_attention_state_field_exists_and_defaults() {
     let pr1 = create_test_pr("1", 1);
     let prs = vec![pr1];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -802,6 +838,8 @@ async fn test_delete_from_archive() {
 
     let pr1 = create_test_pr("1", 1);
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(|| Ok(vec![]));
     state_repo.expect_load_archive().returning(move || Ok(vec![pr1.clone()]));
     state_repo.expect_save_archive().with(eq(vec![])).returning(|_| Ok(()));
@@ -846,6 +884,8 @@ async fn test_open_in_browser_marks_seen_when_configured() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -899,6 +939,8 @@ async fn test_open_in_browser_does_not_mark_seen_when_disabled() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     github.expect_open_pr_in_browser().returning(|_| Ok(()));
@@ -943,6 +985,8 @@ async fn test_converted_to_draft_clears_review_requested() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -999,6 +1043,8 @@ async fn test_open_in_browser_marks_seen_even_when_browser_fails() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1056,6 +1102,8 @@ async fn test_mark_seen_does_not_reset_comment_delta() {
     };
     let prs = vec![pr1.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1103,6 +1151,8 @@ async fn test_active_reasons_survive_restart() {
     };
     let prs = vec![pr1];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -1145,6 +1195,8 @@ async fn test_last_seen_at_survives_restart() {
     };
     let prs = vec![pr1];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -1184,6 +1236,8 @@ async fn test_last_comment_at_survives_restart() {
     };
     let prs = vec![pr1];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
 
@@ -1220,6 +1274,8 @@ async fn test_saved_state_without_attention_fields_treated_as_first_appearance()
     saved_pr.attention_state = AttentionState::default(); // no attention fields
     let saved_prs = vec![saved_pr.clone()];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(saved_prs.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1263,6 +1319,8 @@ async fn test_restrictive_query_drops_unmatched_prs_after_initial_sync() {
     let pr3 = create_test_pr("3", 3);
     let persisted = vec![pr1.clone(), pr2, pr3];
 
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1307,6 +1365,8 @@ async fn test_pr_dropped_when_query_stops_matching_after_initial_sync() {
     pr1.matched_queries = vec!["main".to_string()];
 
     let persisted = vec![pr1];
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1356,6 +1416,8 @@ async fn test_mark_seen_survives_poll_with_new_pr_added() {
     };
 
     let persisted = vec![pr_a.clone()];
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));
@@ -1444,6 +1506,8 @@ async fn test_mark_seen_survives_pr_disappear_and_reappear() {
     };
 
     let persisted = vec![pr_a.clone()];
+    state_repo.expect_load_config_json().returning(|| Ok(None));
+    state_repo.expect_save_config_json().returning(|_| Ok(())).times(..);
     state_repo.expect_load_state().returning(move || Ok(persisted.clone()));
     state_repo.expect_load_archive().returning(|| Ok(vec![]));
     state_repo.expect_save_state().returning(|_| Ok(()));

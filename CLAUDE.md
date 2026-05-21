@@ -23,7 +23,7 @@ Run `cargo check`, `cargo clippy`, and `cargo test` after any code change. Fix a
 - `src/domain/` — pure business logic: PR models (`pr.rs`), "needs attention" rules (`rules.rs`), lifecycle transitions (`lifecycle.rs`), and DI traits (`ports.rs`)
 - `src/github/` — `GhCliClient` (implements `GithubProvider` via `gh` CLI subprocess), raw JSON models, rate limit tracking
 - `src/polling/` — background Tokio task, round-robin query execution per interval
-- `src/storage/` — TOML persistence, `fs2` file locking for multi-instance write safety, archive rotation
+- `src/storage/` — SQLite persistence via `rusqlite` (`ghwatch.db`); WAL mode + `poll_lease` table for multi-instance safety
 - `src/ui/` — Ratatui rendering, `AppEvent` mpsc channel, components for list/detail/settings/archive/diagnostics
 - `src/app.rs` — `App` struct holding all state, wires modules together, drives the event loop
 - `src/input.rs` — all keyboard/mouse event dispatch, one handler per `AppMode`
@@ -36,10 +36,10 @@ Run `cargo check`, `cargo clippy`, and `cargo test` after any code change. Fix a
 
 **Key traits (in `src/domain/ports.rs`):**
 - `GithubProvider` — implemented by `GhCliClient`; mock with `mockall` in tests
-- `StateRepository` — implemented by `FileStateRepository`
+- `StateRepository` — implemented by `SqliteStateRepository`
 - `NotificationService` — implemented by `NotificationDispatcher`
 
-**Config:** `~/.config/ghwatch/config.toml`. State/lock files in `~/.local/state/ghwatch/`.
+**Config:** Migrated from `~/.config/ghwatch/config.toml` on first run; stored in SQLite (`~/.local/state/ghwatch/ghwatch.db`) thereafter.
 
 ## Testing
 
