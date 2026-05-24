@@ -55,14 +55,16 @@ impl PollingWorker {
                     // pulled from the DB with stale/empty `matched_queries`
                     // would be pruned by the `InitialSyncDone` handler before
                     // any GH data has been seen.
+                    // We must also NOT advance query_index: doing so would cause
+                    // InitialSyncDone to fire after only N-1 of N queries are
+                    // polled (the cycle wraps to 0 without ever polling query 0).
                     if let Ok(prs) = self.state_repo.load_state() {
                         let _ = self
                             .event_tx
                             .send(AppEvent::PrsUpdated { query_name: "db-reload".to_string(), prs })
                             .await;
                     }
-                    query_index = (query_index + 1) % self.config.queries.len();
-                    continue;
+                    continue; // query_index stays at 0; lease re-checked next tick
                 }
 
                 // Rate limit check once per cycle
@@ -352,5 +354,89 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_millis(80), drain).await;
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_initial_sync_done_fires_only_after_all_queries_polled_when_lease_initially_fails()
+    {
+        // With 2 queries, if the lease fails on the first tick, query_index
+        // must NOT advance. Otherwise query_index goes to 1, query 1 is
+        // polled, query_index wraps back to 0, and InitialSyncDone fires
+        // before query 0 has ever been polled.
+        let mut github = MockGithubProvider::new();
+        let mut state_repo = MockStateRepository::new();
+        let (tx, mut rx) = mpsc::channel(20);
+
+        let config = AppConfig {
+            queries: vec![
+                QueryConfig {
+                    name: "q0".to_string(),
+                    search: "s0".to_string(),
+                    interval: "1s".to_string(),
+                    enabled: true,
+                },
+                QueryConfig {
+                    name: "q1".to_string(),
+                    search: "s1".to_string(),
+                    interval: "1s".to_string(),
+                    enabled: true,
+                },
+            ],
+            polling_interval_ms: 10,
+            ..Default::default()
+        };
+
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        state_repo.expect_try_acquire_poll_lease().returning(move |_| {
+            let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(n > 0) // fail once, then always succeed
+        });
+        state_repo.expect_load_state().returning(|| Ok(vec![]));
+
+        github
+            .expect_fetch_rate_limit()
+            .returning(|| Ok(RateLimitStatus { limit: 5000, remaining: 4000, reset_at: 0 }));
+        github.expect_fetch_prs_by_query().returning(|_, _| Ok(vec![]));
+
+        let worker = PollingWorker::new(config, Arc::new(github), Arc::new(state_repo), tx);
+        let handle = tokio::spawn(worker.start());
+
+        // Collect events until InitialSyncDone fires (or timeout).
+        let mut events: Vec<AppEvent> = Vec::new();
+        let collect = async {
+            while let Some(ev) = rx.recv().await {
+                let done = matches!(ev, AppEvent::InitialSyncDone);
+                events.push(ev);
+                if done {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(500), collect).await;
+        handle.abort();
+
+        let done_pos = events
+            .iter()
+            .position(|e| matches!(e, AppEvent::InitialSyncDone))
+            .expect("InitialSyncDone must fire");
+
+        let q0_pos = events.iter().position(|e| {
+            matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q0")
+        });
+        let q1_pos = events.iter().position(|e| {
+            matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q1")
+        });
+
+        assert!(q0_pos.is_some(), "q0 must be polled before InitialSyncDone");
+        assert!(q1_pos.is_some(), "q1 must be polled before InitialSyncDone");
+        assert!(
+            q0_pos.unwrap() < done_pos,
+            "q0 must appear before InitialSyncDone (got q0_pos={q0_pos:?}, done_pos={done_pos})"
+        );
+        assert!(
+            q1_pos.unwrap() < done_pos,
+            "q1 must appear before InitialSyncDone (got q1_pos={q1_pos:?}, done_pos={done_pos})"
+        );
     }
 }
