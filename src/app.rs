@@ -538,9 +538,13 @@ where
                 }
             }
 
-            for pr in &mut current_prs {
-                if !new_ids.contains(&pr.id) && pr.matched_queries.iter().any(|q| q == query_name) {
-                    pr.matched_queries.retain(|q| q != query_name);
+            if !self.is_first_sync {
+                for pr in &mut current_prs {
+                    if !new_ids.contains(&pr.id)
+                        && pr.matched_queries.iter().any(|q| q == query_name)
+                    {
+                        pr.matched_queries.retain(|q| q != query_name);
+                    }
                 }
             }
             if !self.is_first_sync {
@@ -798,6 +802,97 @@ mod tests {
             last_seen_conversational_count: 0,
             attention_state: AttentionState::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_startup_prs_not_pruned_when_missing_from_first_poll() {
+        let github = Arc::new(MockGithubProvider::new());
+        let mut state_repo = MockStateRepository::new();
+        state_repo.expect_load_config_json().returning(|| Ok(None));
+        state_repo.expect_save_config_json().returning(|_| Ok(()));
+
+        let mut pr1 = create_test_pr("pr1", CIStatus::Passing);
+        pr1.matched_queries = vec!["q1".to_string()];
+        let mut pr2 = create_test_pr("pr2", CIStatus::Passing);
+        pr2.number = 2;
+        pr2.matched_queries = vec!["q1".to_string()];
+
+        let prs_from_db = vec![pr1.clone(), pr2.clone()];
+        state_repo.expect_load_state().returning(move || Ok(prs_from_db.clone()));
+        state_repo.expect_load_archive().returning(|| Ok(vec![]));
+        state_repo.expect_save_state().returning(|_| Ok(()));
+
+        let state_repo = Arc::new(state_repo);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut app = App::with_deps(
+            github,
+            state_repo,
+            &std::path::PathBuf::from("."),
+            &std::path::PathBuf::from("."),
+            backend,
+        )
+        .unwrap();
+
+        // First poll returns only pr1; pr2 is temporarily absent
+        app.handle_app_event(AppEvent::PrsUpdated { query_name: "q1".to_string(), prs: vec![pr1] })
+            .await;
+
+        app.handle_app_event(AppEvent::InitialSyncDone).await;
+
+        assert_eq!(
+            app.pr_list.items().len(),
+            2,
+            "PR absent from first poll should survive InitialSyncDone"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_pr_with_empty_matched_queries_survives_db_reload_startup() {
+        // Scenario: app starts with the lease held by another instance (or stale
+        // lease from a previous run within the polling interval). The worker
+        // sends PollCycleStarted + PrsUpdated{db-reload} but NO real poll
+        // happens, so InitialSyncDone must not fire. A PR with empty
+        // matched_queries (legacy bad data persisted from older app versions)
+        // must remain visible until a real poll has had a chance to refresh it.
+        let github = Arc::new(MockGithubProvider::new());
+        let mut state_repo = MockStateRepository::new();
+        state_repo.expect_load_config_json().returning(|| Ok(None));
+        state_repo.expect_save_config_json().returning(|_| Ok(()));
+
+        let mut legacy_pr = create_test_pr("legacy", CIStatus::Passing);
+        legacy_pr.matched_queries = Vec::new();
+        let prs_from_db = vec![legacy_pr.clone()];
+
+        state_repo.expect_load_state().returning(move || Ok(prs_from_db.clone()));
+        state_repo.expect_load_archive().returning(|| Ok(vec![]));
+        state_repo.expect_save_state().returning(|_| Ok(()));
+
+        let state_repo = Arc::new(state_repo);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut app = App::with_deps(
+            github,
+            state_repo,
+            &std::path::PathBuf::from("."),
+            &std::path::PathBuf::from("."),
+            backend,
+        )
+        .unwrap();
+
+        app.handle_app_event(AppEvent::PollCycleStarted).await;
+        app.handle_app_event(AppEvent::PrsUpdated {
+            query_name: "db-reload".to_string(),
+            prs: vec![legacy_pr],
+        })
+        .await;
+
+        assert_eq!(
+            app.pr_list.items().len(),
+            1,
+            "Legacy PR with empty matched_queries must survive the db-reload \
+             startup path (the worker should not fire InitialSyncDone before \
+             any real poll)"
+        );
+        assert!(app.is_first_sync, "is_first_sync must remain true until a real poll completes");
     }
 
     #[tokio::test]

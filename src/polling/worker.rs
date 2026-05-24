@@ -47,7 +47,14 @@ impl PollingWorker {
                     self.state_repo.try_acquire_poll_lease(lease_interval).unwrap_or(true);
 
                 if !is_lease_holder {
-                    // Another instance is polling; refresh UI from DB.
+                    // Another instance is polling (or our previous run's lease is
+                    // still fresh); refresh UI from DB and skip this cycle.
+                    // We must NOT mark the first cycle complete here: no real
+                    // poll happened, so the UI's `is_first_sync` flag must stay
+                    // true until a real poll cycle finishes. Otherwise PRs
+                    // pulled from the DB with stale/empty `matched_queries`
+                    // would be pruned by the `InitialSyncDone` handler before
+                    // any GH data has been seen.
                     if let Ok(prs) = self.state_repo.load_state() {
                         let _ = self
                             .event_tx
@@ -55,10 +62,6 @@ impl PollingWorker {
                             .await;
                     }
                     query_index = (query_index + 1) % self.config.queries.len();
-                    if !first_cycle_complete {
-                        first_cycle_complete = true;
-                        let _ = self.event_tx.send(AppEvent::InitialSyncDone).await;
-                    }
                     continue;
                 }
 
@@ -300,5 +303,54 @@ mod tests {
         assert_eq!(parse_duration("5m"), Some(Duration::from_mins(5)));
         assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
         assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[tokio::test]
+    async fn test_lease_not_acquired_does_not_fire_initial_sync_done() {
+        let github = MockGithubProvider::new();
+        let mut state_repo = MockStateRepository::new();
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let config = AppConfig {
+            queries: vec![QueryConfig {
+                name: "test".to_string(),
+                search: "search".to_string(),
+                interval: "1s".to_string(),
+                enabled: true,
+            }],
+            polling_interval_ms: 10,
+            ..Default::default()
+        };
+
+        state_repo.expect_try_acquire_poll_lease().returning(|_| Ok(false));
+        state_repo.expect_load_state().returning(|| Ok(vec![]));
+
+        let worker = PollingWorker::new(config, Arc::new(github), Arc::new(state_repo), tx);
+        let handle = tokio::spawn(worker.start());
+
+        let event1 = rx.recv().await.unwrap();
+        assert!(matches!(event1, AppEvent::PollCycleStarted));
+
+        let event2 = rx.recv().await.unwrap();
+        match event2 {
+            AppEvent::PrsUpdated { query_name, .. } => {
+                assert_eq!(query_name, "db-reload");
+            }
+            other => panic!("Expected PrsUpdated{{db-reload}}, got {other:?}"),
+        }
+
+        // Drain any further events for a short window. None of them should be
+        // InitialSyncDone — the worker has not actually polled yet.
+        let drain = async {
+            while let Some(ev) = rx.recv().await {
+                assert!(
+                    !matches!(ev, AppEvent::InitialSyncDone),
+                    "InitialSyncDone must not fire when lease is not acquired"
+                );
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(80), drain).await;
+
+        handle.abort();
     }
 }

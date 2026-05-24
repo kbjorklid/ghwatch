@@ -525,6 +525,10 @@ where
         KeyCode::Char('f') => {
             app.mode = AppMode::Follow;
         }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.diagnostic_selected_index = 0;
+            app.mode = AppMode::Diagnostic;
+        }
         KeyCode::Left | KeyCode::Char('h') => switch_to_settings(app),
         KeyCode::Right | KeyCode::Char('l') => switch_to_archive(app),
         KeyCode::Esc => {

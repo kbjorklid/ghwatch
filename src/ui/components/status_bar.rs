@@ -18,7 +18,7 @@ pub fn render_status_bar(
 ) {
     let keys = match mode {
         AppMode::Normal => {
-            "j/k: Nav | Tab: Focus | o: Open | y: Copy | s: Sort | f: Follow | /: Filter | m: Mark | u: Unfollow | h/l: Tabs | q: Quit"
+            "j/k: Nav | Tab: Focus | o: Open | y: Copy | s: Sort | f: Follow | /: Filter | m: Mark | u: Unfollow | h/l: Tabs | Ctrl+L: Log | q: Quit"
         }
         AppMode::Search => "Enter: Filter | Esc: Cancel | Backspace: Delete",
         AppMode::Follow => "Enter: Follow | Esc: Cancel",

@@ -44,6 +44,7 @@ pub fn render_help(f: &mut Frame, area: Rect, theme: &Theme) {
         Line::from("  S            : Open Settings screen"),
         Line::from("  A            : Open Archive view"),
         Line::from("  ?            : Open this Help overlay"),
+        Line::from("  Ctrl+L       : Open gh call log"),
         Line::from("  q            : Quit application"),
         Line::from(""),
         Line::from(vec![Span::styled(
