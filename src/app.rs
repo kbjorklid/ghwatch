@@ -485,7 +485,6 @@ where
                             matched_queries.push(query_name.to_string());
                         }
                         old_pr.matched_queries = matched_queries;
-                        self.trigger_details_fetch().await;
                     } else if !old_pr.matched_queries.iter().any(|q| q == query_name) {
                         old_pr.matched_queries.push(query_name.to_string());
                     }
@@ -505,7 +504,7 @@ where
                         self.notifier.notify_pr_update(&cached, &new_pr);
                     }
                     let mut pr = new_pr;
-                    pr.last_seen_at = cached.last_seen_at.clone();
+                    pr.last_seen_at.clone_from(&cached.last_seen_at);
                     pr.last_seen_unresolved_count = cached.last_seen_unresolved_count;
                     pr.last_seen_total_resolvable_count = cached.last_seen_total_resolvable_count;
                     pr.last_seen_conversational_count = cached.last_seen_conversational_count;
@@ -514,7 +513,6 @@ where
                         pr.matched_queries.push(query_name.to_string());
                     }
                     current_prs.push(pr);
-                    self.trigger_details_fetch().await;
                 } else {
                     let new_attn = attention::evaluate(
                         None,
@@ -534,7 +532,6 @@ where
                         pr.matched_queries.push(query_name.to_string());
                     }
                     current_prs.push(pr);
-                    self.trigger_details_fetch().await;
                 }
             }
 
@@ -658,48 +655,6 @@ where
                             )))
                             .await;
                     }
-                }
-            });
-        }
-    }
-
-    pub async fn trigger_details_fetch(&mut self) {
-        if let Some(pr) = self.pr_list.selected_pr() {
-            let tx = self.event_tx.clone();
-            let github = self.github.clone();
-            let repo = pr.repo.clone();
-            let number = pr.number;
-
-            tokio::spawn(async move {
-                if let Ok(full_pr) = github.fetch_pr_details(&repo, number).await {
-                    let _ = tx
-                        .send(AppEvent::PrsUpdated {
-                            query_name: "detail".to_string(),
-                            prs: vec![full_pr.clone()],
-                        })
-                        .await;
-
-                    if !full_pr.head_ref.is_empty()
-                        && let Ok(checks) = github.fetch_check_runs(&repo, &full_pr.head_ref).await
-                    {
-                        let _ = tx
-                            .send(AppEvent::CiStatusLoaded {
-                                repo: repo.clone(),
-                                pr_number: number,
-                                checks,
-                            })
-                            .await;
-                    }
-                }
-
-                if let Ok(timeline) = github.fetch_timeline(&repo, number).await {
-                    let _ = tx
-                        .send(AppEvent::TimelineLoaded {
-                            repo: repo.clone(),
-                            pr_number: number,
-                            events: timeline,
-                        })
-                        .await;
                 }
             });
         }

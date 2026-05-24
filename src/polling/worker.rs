@@ -1,9 +1,12 @@
 use crate::config::AppConfig;
 use crate::domain::ports::{GithubProvider, StateRepository};
 use crate::ui::events::AppEvent;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
+
+const DETAIL_FRESHNESS_SECS: u64 = 180;
 
 #[allow(missing_debug_implementations)]
 pub struct PollingWorker {
@@ -12,6 +15,8 @@ pub struct PollingWorker {
     state_repo: Arc<dyn StateRepository>,
     event_tx: mpsc::Sender<AppEvent>,
     last_polled: Vec<Option<Instant>>,
+    detail_queue: VecDeque<(String, u32)>,
+    last_detail_fetched: HashMap<String, Instant>,
 }
 
 impl PollingWorker {
@@ -22,7 +27,15 @@ impl PollingWorker {
         event_tx: mpsc::Sender<AppEvent>,
     ) -> Self {
         let num_queries = config.queries.len();
-        Self { config, github, state_repo, event_tx, last_polled: vec![None; num_queries] }
+        Self {
+            config,
+            github,
+            state_repo,
+            event_tx,
+            last_polled: vec![None; num_queries],
+            detail_queue: VecDeque::new(),
+            last_detail_fetched: HashMap::new(),
+        }
     }
 
     pub async fn start(mut self) {
@@ -86,6 +99,24 @@ impl PollingWorker {
                         time::sleep(Duration::from_mins(1)).await;
                     }
                 }
+
+                // Enqueue PRs whose details are stale (not fetched in the last 3 minutes).
+                let now = Instant::now();
+                let freshness = Duration::from_secs(DETAIL_FRESHNESS_SECS);
+                if let Ok(prs) = self.state_repo.load_state() {
+                    for pr in prs {
+                        let key = format!("{}/{}", pr.repo, pr.number);
+                        let is_stale = self
+                            .last_detail_fetched
+                            .get(&key)
+                            .is_none_or(|&last| now.duration_since(last) >= freshness);
+                        let already_queued =
+                            self.detail_queue.iter().any(|(r, n)| r == &pr.repo && *n == pr.number);
+                        if is_stale && !already_queued {
+                            self.detail_queue.push_back((pr.repo, pr.number));
+                        }
+                    }
+                }
             }
 
             // Round-robin
@@ -120,11 +151,58 @@ impl PollingWorker {
                 }
             }
 
+            self.fetch_one_detail().await;
+
             query_index = (query_index + 1) % self.config.queries.len();
             if query_index == 0 && !first_cycle_complete {
                 first_cycle_complete = true;
                 let _ = self.event_tx.send(AppEvent::InitialSyncDone).await;
             }
+        }
+    }
+
+    async fn fetch_one_detail(&mut self) {
+        let freshness = Duration::from_secs(DETAIL_FRESHNESS_SECS);
+        while let Some((repo, pr_number)) = self.detail_queue.pop_front() {
+            let key = format!("{repo}/{pr_number}");
+            let is_stale = self
+                .last_detail_fetched
+                .get(&key)
+                .is_none_or(|&last| Instant::now().duration_since(last) >= freshness);
+            if !is_stale {
+                continue;
+            }
+            // Record fetch time before spawning so a second tick cannot double-fetch.
+            self.last_detail_fetched.insert(key, Instant::now());
+            let github = self.github.clone();
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(full_pr) = github.fetch_pr_details(&repo, pr_number).await {
+                    let _ = tx
+                        .send(AppEvent::PrsUpdated {
+                            query_name: "detail".to_string(),
+                            prs: vec![full_pr.clone()],
+                        })
+                        .await;
+                    if !full_pr.head_ref.is_empty()
+                        && let Ok(checks) = github.fetch_check_runs(&repo, &full_pr.head_ref).await
+                    {
+                        let _ = tx
+                            .send(AppEvent::CiStatusLoaded {
+                                repo: repo.clone(),
+                                pr_number,
+                                checks,
+                            })
+                            .await;
+                    }
+                }
+                if let Ok(timeline) = github.fetch_timeline(&repo, pr_number).await {
+                    let _ = tx
+                        .send(AppEvent::TimelineLoaded { repo, pr_number, events: timeline })
+                        .await;
+                }
+            });
+            break;
         }
     }
 }
@@ -212,6 +290,7 @@ mod tests {
         };
 
         state_repo.expect_try_acquire_poll_lease().returning(|_| Ok(true));
+        state_repo.expect_load_state().returning(|| Ok(vec![]));
 
         github
             .expect_fetch_rate_limit()
@@ -421,12 +500,12 @@ mod tests {
             .position(|e| matches!(e, AppEvent::InitialSyncDone))
             .expect("InitialSyncDone must fire");
 
-        let q0_pos = events.iter().position(|e| {
-            matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q0")
-        });
-        let q1_pos = events.iter().position(|e| {
-            matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q1")
-        });
+        let q0_pos = events.iter().position(
+            |e| matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q0"),
+        );
+        let q1_pos = events.iter().position(
+            |e| matches!(e, AppEvent::PrsUpdated { query_name, .. } if query_name == "q1"),
+        );
 
         assert!(q0_pos.is_some(), "q0 must be polled before InitialSyncDone");
         assert!(q1_pos.is_some(), "q1 must be polled before InitialSyncDone");

@@ -51,13 +51,11 @@ where
                 && app.pr_list.selected_index() < app.pr_list.items().len().saturating_sub(1) =>
         {
             app.pr_list.select_next();
-            app.trigger_details_fetch().await;
         }
         MouseEventKind::ScrollUp
             if app.mode == AppMode::Normal && app.pr_list.selected_index() > 0 =>
         {
             app.pr_list.select_prev();
-            app.trigger_details_fetch().await;
         }
         _ => {}
     }
@@ -67,8 +65,6 @@ pub async fn handle_key<B: Backend>(app: &mut App<B>, key: KeyEvent)
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let old_index = app.pr_list.selected_index();
-
     match app.mode {
         AppMode::Search => handle_search_key(app, key).await,
         AppMode::Follow => handle_follow_key(app, key).await,
@@ -84,10 +80,6 @@ where
         AppMode::ConfirmQuery => handle_confirm_query_key(app, key).await,
         AppMode::DeleteQueryConfirm => handle_delete_query_confirm_key(app, key),
         AppMode::EditMaxAgeDays => handle_edit_max_age_days_key(app, key),
-    }
-
-    if old_index != app.pr_list.selected_index() {
-        app.trigger_details_fetch().await;
     }
 }
 
